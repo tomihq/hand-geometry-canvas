@@ -148,6 +148,22 @@ def nearest_corner_any(point: Point, rect: Rectangle) -> Corner:
     return min(corners.keys(), key=lambda c: distance(point, corners[c]))
 
 
+def nearest_corner_excluding(
+    point: Point,
+    rect: Rectangle,
+    excluded: set[Corner],
+) -> Corner | None:
+    """Closest corner that is not in ``excluded``. None if all are excluded."""
+    corners = {
+        corner: pos
+        for corner, pos in rectangle_corners(rect).items()
+        if corner not in excluded
+    }
+    if not corners:
+        return None
+    return min(corners.keys(), key=lambda c: distance(point, corners[c]))
+
+
 def resize_rectangle_from_corner(
     rect: Rectangle,
     active_corner: Corner,

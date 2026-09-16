@@ -16,6 +16,7 @@ import numpy as np
 
 from hand_canvas.camera import Camera
 from hand_canvas.canvas import Canvas
+from hand_canvas.constants import WINDOW_HEIGHT, WINDOW_NAME, WINDOW_WIDTH
 from hand_canvas.gestures import GestureState, MultiHandGestureDetector
 from hand_canvas.hand_tracker import Hand, HandTracker
 from hand_canvas.interaction import InteractionEngine, InteractionState
@@ -108,10 +109,13 @@ def draw_debug(
             )
 
     lines = [f"Hands: {len(hands)}"]
+    if debug.lock_owner:
+        lines.append(f"Lock: {debug.lock_owner} → {debug.selected_id or '-'}")
     for pid, gstate in sorted(gesture_states.items()):
         session = debug.sessions.get(pid)
         if session is not None and session.state != InteractionState.IDLE:
-            label = session.state.value
+            role = "owner" if session.is_owner else "resize"
+            label = f"{session.state.value}({role})"
             obj = session.selected_id or "-"
         else:
             label = gstate.value
@@ -144,7 +148,12 @@ def draw_debug(
 
 
 def run() -> int:
-    camera = Camera(device_index=0, mirror=True)
+    camera = Camera(
+        device_index=0,
+        mirror=True,
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
+    )
     tracker: HandTracker | None = None
     try:
         camera.open()
@@ -152,6 +161,10 @@ def run() -> int:
         gestures = MultiHandGestureDetector()
         interaction = InteractionEngine()
         canvas = Canvas()
+
+        # WINDOW_GUI_NORMAL: no toolbar/buttons. WINDOW_NORMAL: resizable.
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+        cv2.resizeWindow(WINDOW_NAME, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         print("Hand Geometry Canvas running (2 hands). Press 'q' to quit.")
 
@@ -169,7 +182,7 @@ def run() -> int:
             )
             draw_debug(display, hands, gestures.states, interaction)
 
-            cv2.imshow("Hand Geometry Canvas", display)
+            cv2.imshow(WINDOW_NAME, display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break

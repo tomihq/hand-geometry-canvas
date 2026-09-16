@@ -1,4 +1,8 @@
-"""Pointer events independent of vision implementation."""
+"""Pointer / grab events independent of vision implementation.
+
+Pinch → PointerDown / PointerMove / PointerUp (create, stretch, resize).
+Closed fist → GrabDown / GrabMove / GrabUp (select + move figures).
+"""
 
 from __future__ import annotations
 
@@ -25,4 +29,33 @@ class PointerUp:
     pointer_id: str = "default"
 
 
-PointerEvent = PointerMove | PointerDown | PointerUp
+@dataclass(frozen=True)
+class GrabDown:
+    """Fist closed — start selecting / moving a figure."""
+
+    position: Point
+    pointer_id: str = "default"
+
+
+@dataclass(frozen=True)
+class GrabMove:
+    position: Point
+    pointer_id: str = "default"
+
+
+@dataclass(frozen=True)
+class GrabUp:
+    """Hand opened — release the grabbed figure."""
+
+    position: Point
+    pointer_id: str = "default"
+
+
+PointerEvent = (
+    PointerMove
+    | PointerDown
+    | PointerUp
+    | GrabDown
+    | GrabMove
+    | GrabUp
+)

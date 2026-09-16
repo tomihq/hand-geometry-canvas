@@ -13,3 +13,12 @@ SMOOTH_ALPHA = 0.4
 
 # Minimum drag distance before converting a point into a rectangle.
 MIN_RECT_SIZE = 0.01
+
+# Fist detection: enter when >= START curled fingers, exit when <= END.
+FIST_START_CURLS = 3
+FIST_END_CURLS = 1
+
+# Display window (OpenCV)
+WINDOW_NAME = "Hand Geometry Canvas"
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720

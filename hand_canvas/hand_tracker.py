@@ -23,6 +23,10 @@ INDEX_TIP = 8
 INDEX_PIP = 6
 THUMB_TIP = 4
 WRIST = 0
+MIDDLE_MCP = 9
+
+# Finger tip / PIP pairs for fist detection (index, middle, ring, pinky)
+FINGER_PAIRS = ((8, 6), (12, 10), (16, 14), (20, 18))
 
 DEFAULT_MODEL_PATH = (
     Path(__file__).resolve().parent.parent / "models" / "hand_landmarker.task"

@@ -16,15 +16,25 @@ class Frame:
 
 
 class Camera:
-    def __init__(self, device_index: int = 0, mirror: bool = True) -> None:
+    def __init__(
+        self,
+        device_index: int = 0,
+        mirror: bool = True,
+        width: int = 1280,
+        height: int = 720,
+    ) -> None:
         self._device_index = device_index
         self._mirror = mirror
+        self._width = width
+        self._height = height
         self._cap: cv2.VideoCapture | None = None
 
     def open(self) -> None:
         self._cap = cv2.VideoCapture(self._device_index)
         if not self._cap.isOpened():
             raise RuntimeError(f"Could not open camera index {self._device_index}")
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
 
     def read(self) -> Frame:
         if self._cap is None:
