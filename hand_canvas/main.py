@@ -16,7 +16,12 @@ import numpy as np
 
 from hand_canvas.camera import Camera
 from hand_canvas.canvas import Canvas
-from hand_canvas.constants import WINDOW_HEIGHT, WINDOW_NAME, WINDOW_WIDTH
+from hand_canvas.constants import (
+    SHOW_DEBUG_OVERLAY,
+    WINDOW_HEIGHT,
+    WINDOW_NAME,
+    WINDOW_WIDTH,
+)
 from hand_canvas.gestures import GestureState, MultiHandGestureDetector
 from hand_canvas.gpu_renderer import GpuCanvasRenderer
 from hand_canvas.hand_tracker import Hand, HandTracker
@@ -123,11 +128,12 @@ def draw_debug(
         dist = pinch_dists.get(pid)
         thr = pinch_thresholds.get(pid)
         fist = fist_scores.get(pid)
-        dist_txt = ""
-        if gstate == GestureState.FIST and fist is not None:
-            dist_txt = f"  fist={fist}/4"
-        elif dist is not None and thr is not None:
-            dist_txt = f"  d={dist:.3f}/{thr[0]:.3f}"
+        parts = []
+        if dist is not None and thr is not None:
+            parts.append(f"d={dist:.3f}/{thr[0]:.3f}")
+        if fist is not None:
+            parts.append(f"fist={fist}/4")
+        dist_txt = f"  {'  '.join(parts)}" if parts else ""
         if session is not None and session.state != InteractionState.IDLE:
             role = "owner" if session.is_owner else "resize"
             label = f"{session.state.value}({role})"
@@ -183,7 +189,11 @@ def run() -> int:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
         cv2.resizeWindow(WINDOW_NAME, WINDOW_WIDTH, WINDOW_HEIGHT)
 
-        print("Hand Geometry Canvas running (2 hands). Press 'q' to quit.")
+        show_debug = SHOW_DEBUG_OVERLAY
+        print(
+            "Hand Geometry Canvas running (2 hands). "
+            "Press 'd' to toggle the debug overlay, 'q' to quit."
+        )
 
         while True:
             frame = camera.read()
@@ -201,20 +211,23 @@ def run() -> int:
                     background=frame.image,
                     selected_ids=selected,
                 )
-            draw_debug(
-                display,
-                hands,
-                gestures.states,
-                interaction,
-                pinch_dists=gestures.pinch_dists,
-                pinch_thresholds=gestures.pinch_thresholds,
-                fist_scores=gestures.fist_scores,
-            )
+            if show_debug:
+                draw_debug(
+                    display,
+                    hands,
+                    gestures.states,
+                    interaction,
+                    pinch_dists=gestures.pinch_dists,
+                    pinch_thresholds=gestures.pinch_thresholds,
+                    fist_scores=gestures.fist_scores,
+                )
 
             cv2.imshow(WINDOW_NAME, display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            if key == ord("d"):
+                show_debug = not show_debug
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except Exception as exc:  # noqa: BLE001

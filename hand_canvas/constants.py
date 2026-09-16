@@ -1,31 +1,44 @@
 """Configurable thresholds for gesture detection and interaction."""
 
-# Pinch as fraction of hand size (wrist → middle MCP). End > start = hysteresis.
-PINCH_START_RATIO = 0.50
-PINCH_END_RATIO = 0.70
+# --- Gesture detection -------------------------------------------------------
+# Every threshold below is a ratio of hand size, so camera distance is
+# irrelevant. ON/OFF pairs leave a margin band in between: while a measure sits
+# inside the band the current gesture simply holds, instead of flickering.
 
-# Absolute floor/ceiling so extreme camera distances don't break ratios.
-PINCH_START_MIN = 0.045
-PINCH_START_MAX = 0.11
-PINCH_END_MIN = 0.06
-PINCH_END_MAX = 0.15
+# Landmark noise is smoothed by taking the median of this many frames. It also
+# sets the hold required to *start* a gesture (~5 frames ≈ 150–300ms).
+GESTURE_WINDOW_FRAMES = 5
 
-# Frames under the start threshold before emitting PointerDown.
-PINCH_CONFIRM_FRAMES = 3
+# Guard against a degenerate hand (all landmarks stacked) dividing by ~zero.
+MIN_HAND_SCALE = 1e-3
 
-# Fist: fingertip-near-palm score (0–4). Confirm ~300–500ms before grab.
-FIST_TIP_PALM_RATIO = 0.95
-FIST_SCORE_START = 3
-FIST_SCORE_END = 1
-FIST_CONFIRM_FRAMES = 10
+# Thumb–index gap / hand size. Tips touching measure ~0.15; a relaxed thumb
+# sits past 0.4, so 0.32 → 0.55 is a wide margin either way.
+PINCH_RATIO_ON = 0.32
+PINCH_RATIO_OFF = 0.55
+
+# Where the thumb–index midpoint sits relative to the palm center. A pinch
+# reaches out (0.8–1.2); a closed hand keeps the tips over the palm (~0.2).
+# The gap between the two is a deliberate no-man's land: neither gesture fires.
+PINCH_TIPS_PALM_MIN = 0.55
+FIST_TIPS_PALM_MAX = 0.45
+
+# Fingertip-to-palm distance / hand size, per finger. Curled reads ~0.25,
+# extended reads well past 1.0.
+FIST_CURL_RATIO_ON = 0.75
+FIST_CURL_RATIO_OFF = 1.05
+FIST_FINGERS_ON = 4
+FIST_FINGERS_OFF = 2
+
+# Index tip vs PIP distance from the wrist. Above this the finger is extended.
+INDEX_EXTENDED_RATIO = 1.08
 
 # Max distance (normalized) to select an existing point / corner handle.
 HIT_RADIUS = 0.035
 CORNER_HIT_RADIUS = 0.07
 
-# Tiny padding for palm jitter only — palm must sit on/near the figure.
-# 0.12 was ~12% of the frame per side and grabbed from well outside.
-GRAB_HIT_PADDING = 0.02
+# Palm may jitter while closing the fist — keep a small grab margin.
+GRAB_HIT_PADDING = 0.03
 
 # Slightly looser when helping resize a figure locked by the other hand.
 HELPER_HIT_PADDING = 0.04
@@ -40,3 +53,6 @@ MIN_RECT_SIZE = 0.01
 WINDOW_NAME = "Hand Geometry Canvas"
 WINDOW_WIDTH = 640
 WINDOW_HEIGHT = 480
+
+# Hand skeleton, gesture text and drag markers. Toggle at runtime with 'd'.
+SHOW_DEBUG_OVERLAY = False

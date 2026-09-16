@@ -1,29 +1,45 @@
 """Gesture state machine → pointer / grab events.
 
+Interprets hand landmarks only. Does not touch canvas or geometry shapes.
+
 - Pinch → create / stretch / resize (Pointer*). Midpoint of thumb–index.
 - Closed fist → select + move (Grab*); open hand releases.
 
-Fist is detected by fingertip proximity to the palm (not thumb–index distance),
-so a closed hand is never mistaken for a pinch. Grab needs a short hold
-(~FIST_CONFIRM_FRAMES) before firing — about 300–500ms at typical FPS.
+Landmarks are noisy, so nothing here compares raw distances:
+
+  1. Every measure is a ratio of hand size, making it independent of how far
+     the hand is from the camera. Hand size itself is the *median* of several
+     palm spans, so one bad landmark cannot skew it.
+  2. Measures are median-filtered over a short frame window, so a single
+     outlier frame can never start or stop a gesture.
+  3. Thresholds come in ON/OFF pairs. Between them lies a margin band where
+     the previous state simply holds, instead of flapping on borderline values.
+
+Both gestures must be deliberate, so a relaxed or half-closed hand does nothing:
+  - Grab: fingertips tucked onto the palm (index included), held briefly.
+  - Pinch: thumb and index tips touching, out away from the palm.
 """
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
 from enum import Enum
 
+import numpy as np
+
 from hand_canvas.constants import (
-    FIST_CONFIRM_FRAMES,
-    FIST_SCORE_END,
-    FIST_SCORE_START,
-    FIST_TIP_PALM_RATIO,
-    PINCH_CONFIRM_FRAMES,
-    PINCH_END_MAX,
-    PINCH_END_MIN,
-    PINCH_END_RATIO,
-    PINCH_START_MAX,
-    PINCH_START_MIN,
-    PINCH_START_RATIO,
+    FIST_CURL_RATIO_OFF,
+    FIST_CURL_RATIO_ON,
+    FIST_FINGERS_OFF,
+    FIST_FINGERS_ON,
+    FIST_TIPS_PALM_MAX,
+    GESTURE_WINDOW_FRAMES,
+    INDEX_EXTENDED_RATIO,
+    MIN_HAND_SCALE,
+    PINCH_RATIO_OFF,
+    PINCH_RATIO_ON,
+    PINCH_TIPS_PALM_MIN,
 )
 from hand_canvas.events import (
     GrabDown,
@@ -34,17 +50,19 @@ from hand_canvas.events import (
     PointerMove,
     PointerUp,
 )
-from hand_canvas.geometry import Point, distance
+from hand_canvas.geometry import Point
 from hand_canvas.hand_tracker import (
     INDEX_PIP,
     INDEX_TIP,
-    MIDDLE_MCP,
+    THUMB_TIP,
     WRIST,
     Hand,
 )
 
-_PALM_LANDMARKS = (0, 5, 9, 13, 17)
-_FINGERTIPS = (8, 12, 16, 20)
+# Landmark groups (MediaPipe hand topology)
+_PALM_IDS = np.array([0, 5, 9, 13, 17])
+_MCP_IDS = np.array([5, 9, 13, 17])
+_TIP_IDS = np.array([8, 12, 16, 20])
 
 
 class GestureState(Enum):
@@ -54,47 +72,58 @@ class GestureState(Enum):
     FIST = "FIST"
 
 
-def _is_index_extended(hand: Hand) -> bool:
-    tip = hand.landmarks[INDEX_TIP]
-    pip = hand.landmarks[INDEX_PIP]
-    wrist = hand.landmarks[WRIST]
-    return distance(tip, wrist) > distance(pip, wrist)
+@dataclass(frozen=True)
+class HandMetrics:
+    """Scale-free descriptors of a hand pose (all ratios of hand size)."""
+
+    scale: float
+    pinch: float
+    tips_palm: float
+    curls: np.ndarray
+    index_extended: float
+    palm: Point
+    pinch_point: Point
+    index_point: Point
 
 
-def _hand_scale(hand: Hand) -> float:
-    return max(distance(hand.landmarks[WRIST], hand.landmarks[MIDDLE_MCP]), 1e-3)
+def _landmark_array(hand: Hand) -> np.ndarray:
+    return np.array([(p.x, p.y) for p in hand.landmarks], dtype=np.float64)
 
 
-def _palm_point(hand: Hand) -> Point:
-    """Stable grab cursor = average of wrist + finger MCPs."""
-    xs = sum(hand.landmarks[i].x for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
-    ys = sum(hand.landmarks[i].y for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
-    return Point(xs, ys)
+def _hand_scale(points: np.ndarray) -> float:
+    """Median of several palm spans — robust to any single bad landmark."""
+    spans = np.linalg.norm(points[_MCP_IDS] - points[WRIST], axis=1)
+    spans = np.append(spans, np.linalg.norm(points[5] - points[17]))
+    return max(float(np.median(spans)), MIN_HAND_SCALE)
 
 
-def _pinch_point(hand: Hand) -> Point:
-    a, b = hand.index_tip, hand.thumb_tip
-    return Point(x=(a.x + b.x) * 0.5, y=(a.y + b.y) * 0.5)
+def _metrics(hand: Hand) -> HandMetrics:
+    points = _landmark_array(hand)
+    scale = _hand_scale(points)
 
+    palm = points[_PALM_IDS].mean(axis=0)
+    pinch_point = (points[THUMB_TIP] + points[INDEX_TIP]) * 0.5
 
-def _fist_score(hand: Hand) -> int:
-    """How many fingertips sit near the palm (closed hand)."""
-    palm = _palm_point(hand)
-    limit = FIST_TIP_PALM_RATIO * _hand_scale(hand)
-    return sum(
-        1
-        for tip_i in _FINGERTIPS
-        if distance(hand.landmarks[tip_i], palm) <= limit
+    pinch = float(np.linalg.norm(points[THUMB_TIP] - points[INDEX_TIP])) / scale
+    tips_palm = float(np.linalg.norm(pinch_point - palm)) / scale
+    curls = np.linalg.norm(points[_TIP_IDS] - palm, axis=1) / scale
+
+    wrist = points[WRIST]
+    pip_span = max(float(np.linalg.norm(points[INDEX_PIP] - wrist)), MIN_HAND_SCALE)
+    index_extended = float(np.linalg.norm(points[INDEX_TIP] - wrist)) / pip_span
+
+    return HandMetrics(
+        scale=scale,
+        pinch=pinch,
+        tips_palm=tips_palm,
+        curls=curls,
+        index_extended=index_extended,
+        palm=Point(float(palm[0]), float(palm[1])),
+        pinch_point=Point(float(pinch_point[0]), float(pinch_point[1])),
+        index_point=Point(
+            float(points[INDEX_TIP][0]), float(points[INDEX_TIP][1])
+        ),
     )
-
-
-def _pinch_thresholds(hand: Hand) -> tuple[float, float]:
-    scale = _hand_scale(hand)
-    start = min(max(PINCH_START_RATIO * scale, PINCH_START_MIN), PINCH_START_MAX)
-    end = min(max(PINCH_END_RATIO * scale, PINCH_END_MIN), PINCH_END_MAX)
-    if end <= start:
-        end = start + 0.02
-    return start, end
 
 
 def _tag(event: PointerEvent, pointer_id: str) -> PointerEvent:
@@ -103,130 +132,172 @@ def _tag(event: PointerEvent, pointer_id: str) -> PointerEvent:
 
 
 class GestureDetector:
-    def __init__(
-        self,
-        pinch_confirm: int = PINCH_CONFIRM_FRAMES,
-        fist_confirm: int = FIST_CONFIRM_FRAMES,
-    ) -> None:
-        self._pinch_confirm = max(1, pinch_confirm)
-        self._fist_confirm = max(1, fist_confirm)
+    """One hand's gesture state, driven by median-filtered pose ratios."""
+
+    def __init__(self, window: int = GESTURE_WINDOW_FRAMES) -> None:
+        self._window = max(1, window)
+        self._history: deque[HandMetrics] = deque(maxlen=self._window)
         self.state = GestureState.IDLE
         self._was_pinching = False
         self._was_fisting = False
-        self._pinch_hold = 0
-        self._fist_hold = 0
         self._last_cursor = Point(0.5, 0.5)
         self._last_palm = Point(0.5, 0.5)
-        self.last_pinch_dist = 1.0
-        self.last_pinch_start = PINCH_START_MAX
-        self.last_pinch_end = PINCH_END_MAX
+        self.last_pinch_ratio = 1.0
         self.last_fist_score = 0
+
+    def _smoothed(self) -> HandMetrics:
+        """Median over the window: one outlier frame cannot decide anything."""
+        recent = list(self._history)
+        latest = recent[-1]
+        if len(recent) == 1:
+            return latest
+        return HandMetrics(
+            scale=float(np.median([m.scale for m in recent])),
+            pinch=float(np.median([m.pinch for m in recent])),
+            tips_palm=float(np.median([m.tips_palm for m in recent])),
+            curls=np.median(np.stack([m.curls for m in recent]), axis=0),
+            index_extended=float(np.median([m.index_extended for m in recent])),
+            # Positions stay live so the cursor never lags behind the hand
+            palm=latest.palm,
+            pinch_point=latest.pinch_point,
+            index_point=latest.index_point,
+        )
+
+    def _release_all(self) -> list[PointerEvent]:
+        events: list[PointerEvent] = []
+        if self._was_pinching:
+            events.append(PointerUp(position=self._last_cursor))
+            self._was_pinching = False
+        if self._was_fisting:
+            events.append(GrabUp(position=self._last_palm))
+            self._was_fisting = False
+        return events
 
     def update(self, hand: Hand | None) -> list[PointerEvent]:
         if hand is None:
-            events: list[PointerEvent] = []
-            if self._was_pinching:
-                events.append(PointerUp(position=self._last_cursor))
-                self._was_pinching = False
-            if self._was_fisting:
-                events.append(GrabUp(position=self._last_palm))
-                self._was_fisting = False
-            self._pinch_hold = 0
-            self._fist_hold = 0
+            events = self._release_all()
+            self._history.clear()
             self.state = GestureState.IDLE
-            self.last_pinch_dist = 1.0
+            self.last_pinch_ratio = 1.0
             self.last_fist_score = 0
             return events
 
-        index = hand.index_tip
-        palm = _palm_point(hand)
-        pinch_pos = _pinch_point(hand)
-        pinch_dist = distance(hand.index_tip, hand.thumb_tip)
-        pinch_start, pinch_end = _pinch_thresholds(hand)
-        score = _fist_score(hand)
-        pointing = _is_index_extended(hand)
+        self._history.append(_metrics(hand))
+        m = self._smoothed()
+        # A gesture may only *start* once the window is full, which is the
+        # hold that separates intent from a hand passing through the pose.
+        settled = len(self._history) >= self._window
 
-        self.last_pinch_dist = pinch_dist
-        self.last_pinch_start = pinch_start
-        self.last_pinch_end = pinch_end
-        self.last_fist_score = score
+        palm = m.palm
+        pinch_pos = m.pinch_point
         self._last_palm = palm
+        self.last_pinch_ratio = m.pinch
+        self.last_fist_score = int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_ON))
 
-        fist_pose = score >= FIST_SCORE_START
-        fist_open = score <= FIST_SCORE_END
+        index_extended = m.index_extended > INDEX_EXTENDED_RATIO
+        tips_over_palm = m.tips_palm < FIST_TIPS_PALM_MAX
+        tips_reaching_out = m.tips_palm > PINCH_TIPS_PALM_MIN
+
+        # Closed hand: enough fingertips tucked onto the palm, index included
+        closed_hand = (
+            self.last_fist_score >= FIST_FINGERS_ON
+            and tips_over_palm
+            and not index_extended
+        )
+        hand_opened = (
+            int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_OFF)) <= FIST_FINGERS_OFF
+        )
+
+        pinch_pose = (
+            m.pinch < PINCH_RATIO_ON and tips_reaching_out and not closed_hand
+        )
+        pinch_released = m.pinch > PINCH_RATIO_OFF
 
         events: list[PointerEvent] = []
 
-        # --- Already grabbing ---
+        # --- Holding a grab ---
         if self._was_fisting:
-            if fist_open:
+            # Reaching out into a pinch hands control over to the pinch cursor
+            if pinch_pose:
                 events.append(GrabUp(position=palm))
                 self._was_fisting = False
-                self._fist_hold = 0
-                self.state = GestureState.POINTING if pointing else GestureState.IDLE
-            else:
-                events.append(GrabMove(position=palm))
-                self.state = GestureState.FIST
-            return events
-
-        # --- Closing into a fist (wins over pinch — tips near each other is normal) ---
-        if fist_pose:
-            if self._was_pinching:
-                events.append(PointerUp(position=self._last_cursor))
-                self._was_pinching = False
-            self._pinch_hold = 0
-            self._fist_hold += 1
+                events.extend(self._begin_pinch(pinch_pos))
+                return events
+            if hand_opened:
+                events.append(GrabUp(position=palm))
+                self._was_fisting = False
+                self.state = (
+                    GestureState.POINTING if index_extended else GestureState.IDLE
+                )
+                return events
+            events.append(GrabMove(position=palm))
             self._last_cursor = palm
-            if self._fist_hold >= self._fist_confirm:
-                if not self._was_fisting:
-                    events.append(GrabDown(position=palm))
-                events.append(GrabMove(position=palm))
-                self._was_fisting = True
-                self.state = GestureState.FIST
-            else:
-                # Holding closed — show FIST intent without grabbing yet
-                self.state = GestureState.FIST
+            self.state = GestureState.FIST
             return events
 
-        self._fist_hold = 0
-
-        # --- Active pinch ---
+        # --- Holding a pinch ---
         if self._was_pinching:
-            self._last_cursor = pinch_pos
-            if pinch_dist > pinch_end:
+            # Closing the hand upgrades the pinch into a grab
+            if closed_hand:
                 events.append(PointerUp(position=pinch_pos))
                 self._was_pinching = False
-                self._pinch_hold = 0
-                self.state = GestureState.POINTING if pointing else GestureState.IDLE
-            else:
-                events.append(PointerMove(position=pinch_pos))
-                self.state = GestureState.PINCHING
-            return events
-
-        # --- Start pinch (only when clearly not a fist) ---
-        if pinch_dist < pinch_start:
-            self._pinch_hold += 1
+                events.extend(self._begin_grab(palm))
+                return events
             self._last_cursor = pinch_pos
-            if self._pinch_hold >= self._pinch_confirm:
-                events.append(PointerDown(position=pinch_pos))
-                events.append(PointerMove(position=pinch_pos))
-                self._was_pinching = True
-                self.state = GestureState.PINCHING
+            if pinch_released:
+                events.append(PointerUp(position=pinch_pos))
+                self._was_pinching = False
+                self.state = (
+                    GestureState.POINTING if index_extended else GestureState.IDLE
+                )
             else:
-                self.state = GestureState.POINTING if pointing else GestureState.IDLE
+                events.append(PointerMove(position=pinch_pos))
+                self.state = GestureState.PINCHING
             return events
 
-        self._pinch_hold = 0
-        self._last_cursor = index
-        if pointing:
-            events.append(PointerMove(position=index))
+        # --- Starting a gesture (closed hand wins: it is never a pinch) ---
+        if closed_hand:
+            self.state = GestureState.FIST
+            if settled:
+                events.extend(self._begin_grab(palm))
+            return events
+
+        if pinch_pose:
+            if settled:
+                events.extend(self._begin_pinch(pinch_pos))
+            else:
+                self.state = (
+                    GestureState.POINTING if index_extended else GestureState.IDLE
+                )
+            return events
+
+        self._last_cursor = m.index_point
+        if index_extended:
+            events.append(PointerMove(position=m.index_point))
             self.state = GestureState.POINTING
         else:
             self.state = GestureState.IDLE
         return events
 
+    def _begin_pinch(self, pinch_pos: Point) -> list[PointerEvent]:
+        self._was_pinching = True
+        self._last_cursor = pinch_pos
+        self.state = GestureState.PINCHING
+        return [
+            PointerDown(position=pinch_pos),
+            PointerMove(position=pinch_pos),
+        ]
+
+    def _begin_grab(self, palm: Point) -> list[PointerEvent]:
+        self._was_fisting = True
+        self._last_cursor = palm
+        self.state = GestureState.FIST
+        return [GrabDown(position=palm), GrabMove(position=palm)]
+
 
 class MultiHandGestureDetector:
+    """One independent gesture state machine per handedness label."""
+
     def __init__(self) -> None:
         self._detectors: dict[str, GestureDetector] = {}
 
@@ -259,13 +330,13 @@ class MultiHandGestureDetector:
 
     @property
     def pinch_dists(self) -> dict[str, float]:
-        return {pid: det.last_pinch_dist for pid, det in self._detectors.items()}
+        """Smoothed thumb–index gap as a fraction of hand size."""
+        return {pid: det.last_pinch_ratio for pid, det in self._detectors.items()}
 
     @property
     def pinch_thresholds(self) -> dict[str, tuple[float, float]]:
         return {
-            pid: (det.last_pinch_start, det.last_pinch_end)
-            for pid, det in self._detectors.items()
+            pid: (PINCH_RATIO_ON, PINCH_RATIO_OFF) for pid in self._detectors
         }
 
     @property
