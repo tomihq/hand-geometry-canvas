@@ -24,10 +24,16 @@ class Canvas:
     def __init__(self) -> None:
         self._shapes: list[Shape] = []
         self._next_z = 1
+        # Deletions are grouped, so undoing a sweep brings back the whole wipe
+        self._trash: list[list[Shape]] = []
 
     @property
     def shapes(self) -> list[Shape]:
         return self._shapes
+
+    @property
+    def trash_depth(self) -> int:
+        return len(self._trash)
 
     def add(self, shape: Shape) -> None:
         shape.z = self._next_z
@@ -44,6 +50,27 @@ class Canvas:
 
     def remove(self, shape_id: str) -> None:
         self._shapes = [s for s in self._shapes if s.id != shape_id]
+
+    def discard(self, shape_ids: list[str]) -> list[Shape]:
+        """Delete shapes as one undoable batch. Returns what was removed."""
+        wanted = set(shape_ids)
+        removed = [s for s in self._shapes if s.id in wanted]
+        if not removed:
+            return []
+        self._shapes = [s for s in self._shapes if s.id not in wanted]
+        self._trash.append(removed)
+        return removed
+
+    def restore_last(self) -> list[Shape]:
+        """Undo the most recent deletion batch, back on top of the stack."""
+        if not self._trash:
+            return []
+        batch = self._trash.pop()
+        for shape in batch:
+            shape.z = self._next_z
+            self._next_z += 1
+            self._shapes.append(shape)
+        return batch
 
     def get(self, shape_id: str) -> Shape | None:
         for shape in self._shapes:

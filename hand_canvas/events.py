@@ -51,6 +51,14 @@ class GrabUp:
     pointer_id: str = "default"
 
 
+@dataclass(frozen=True)
+class SweepClear:
+    """Open palm swiped sideways across the frame — wipe the canvas."""
+
+    position: Point
+    pointer_id: str = "default"
+
+
 PointerEvent = (
     PointerMove
     | PointerDown
@@ -58,4 +66,5 @@ PointerEvent = (
     | GrabDown
     | GrabMove
     | GrabUp
+    | SweepClear
 )

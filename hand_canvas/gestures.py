@@ -40,6 +40,10 @@ from hand_canvas.constants import (
     PINCH_RATIO_OFF,
     PINCH_RATIO_ON,
     PINCH_TIPS_PALM_MIN,
+    SWEEP_COOLDOWN_FRAMES,
+    SWEEP_HORIZONTAL_RATIO,
+    SWEEP_MIN_TRAVEL,
+    SWEEP_TRAVEL_FRAMES,
 )
 from hand_canvas.events import (
     GrabDown,
@@ -49,6 +53,7 @@ from hand_canvas.events import (
     PointerEvent,
     PointerMove,
     PointerUp,
+    SweepClear,
 )
 from hand_canvas.geometry import Point
 from hand_canvas.hand_tracker import (
@@ -137,6 +142,10 @@ class GestureDetector:
     def __init__(self, window: int = GESTURE_WINDOW_FRAMES) -> None:
         self._window = max(1, window)
         self._history: deque[HandMetrics] = deque(maxlen=self._window)
+        self._palm_track: deque[tuple[Point, bool]] = deque(
+            maxlen=SWEEP_TRAVEL_FRAMES
+        )
+        self._sweep_cooldown = 0
         self.state = GestureState.IDLE
         self._was_pinching = False
         self._was_fisting = False
@@ -163,6 +172,30 @@ class GestureDetector:
             index_point=latest.index_point,
         )
 
+    def _swept(self) -> bool:
+        """Open palm carried sideways across a good chunk of the frame."""
+        if len(self._palm_track) < self._palm_track.maxlen:
+            return False
+        if not all(palm_open for _pos, palm_open in self._palm_track):
+            return False
+
+        xs = np.array([pos.x for pos, _open in self._palm_track])
+        ys = np.array([pos.y for pos, _open in self._palm_track])
+        dx = float(xs[-1] - xs[0])
+        dy = float(ys[-1] - ys[0])
+
+        if abs(dx) < SWEEP_MIN_TRAVEL:
+            return False
+        if abs(dx) < SWEEP_HORIZONTAL_RATIO * abs(dy):
+            return False
+
+        # Mostly one-way travel: a swipe, not a hand waving back and forth.
+        steps = np.diff(xs)
+        total = float(np.sum(np.abs(steps)))
+        if total <= 0.0:
+            return False
+        return float(np.sum(steps * np.sign(dx))) / total > 0.8
+
     def _release_all(self) -> list[PointerEvent]:
         events: list[PointerEvent] = []
         if self._was_pinching:
@@ -177,6 +210,7 @@ class GestureDetector:
         if hand is None:
             events = self._release_all()
             self._history.clear()
+            self._palm_track.clear()
             self.state = GestureState.IDLE
             self.last_pinch_ratio = 1.0
             self.last_fist_score = 0
@@ -204,9 +238,12 @@ class GestureDetector:
             and tips_over_palm
             and not index_extended
         )
-        hand_opened = (
-            int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_OFF)) <= FIST_FINGERS_OFF
-        )
+        loose_curls = int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_OFF))
+        hand_opened = loose_curls <= FIST_FINGERS_OFF
+        # Sweep needs a flat open palm: every finger clearly away from the palm
+        self._palm_track.append((palm, loose_curls == 0))
+        if self._sweep_cooldown > 0:
+            self._sweep_cooldown -= 1
 
         pinch_pose = (
             m.pinch < PINCH_RATIO_ON and tips_reaching_out and not closed_hand
@@ -269,6 +306,13 @@ class GestureDetector:
                 self.state = (
                     GestureState.POINTING if index_extended else GestureState.IDLE
                 )
+            return events
+
+        if self._sweep_cooldown == 0 and self._swept():
+            self._sweep_cooldown = SWEEP_COOLDOWN_FRAMES
+            self._palm_track.clear()
+            events.append(SweepClear(position=palm))
+            self.state = GestureState.IDLE
             return events
 
         self._last_cursor = m.index_point

@@ -33,6 +33,10 @@ from hand_canvas.constants import (
     HELPER_HIT_PADDING,
     HIT_RADIUS,
     MIN_RECT_SIZE,
+    TRASH_ZONE_H,
+    TRASH_ZONE_W,
+    TRASH_ZONE_X,
+    TRASH_ZONE_Y,
 )
 from hand_canvas.events import (
     GrabDown,
@@ -42,6 +46,7 @@ from hand_canvas.events import (
     PointerEvent,
     PointerMove,
     PointerUp,
+    SweepClear,
 )
 from hand_canvas.geometry import (
     Corner,
@@ -59,6 +64,23 @@ from hand_canvas.geometry import (
 
 if TYPE_CHECKING:
     from hand_canvas.canvas import Canvas
+
+
+def trash_zone() -> Rectangle:
+    """Drop zone for deleting a held figure (normalized frame coords)."""
+    return Rectangle(
+        x=TRASH_ZONE_X,
+        y=TRASH_ZONE_Y,
+        width=TRASH_ZONE_W,
+        height=TRASH_ZONE_H,
+        id="trash-zone",
+    )
+
+
+def _shape_center(shape: Shape) -> Point:
+    if isinstance(shape, Rectangle):
+        return Point(shape.x + shape.width * 0.5, shape.y + shape.height * 0.5)
+    return shape.position
 
 
 class InteractionState(Enum):
@@ -185,6 +207,7 @@ class InteractionEngine:
         grab_downs = [e for e in events if isinstance(e, GrabDown)]
         grab_moves = [e for e in events if isinstance(e, GrabMove)]
         grab_ups = [e for e in events if isinstance(e, GrabUp)]
+        sweeps = [e for e in events if isinstance(e, SweepClear)]
 
         if downs:
             self._handle_downs_parallel(downs, canvas)
@@ -203,7 +226,9 @@ class InteractionEngine:
         for up in ups:
             self._on_pointer_up(up.pointer_id)
         for up in grab_ups:
-            self._on_grab_up(up.pointer_id)
+            self._on_grab_up(up.pointer_id, canvas)
+        if sweeps:
+            self._clear_canvas(canvas)
 
     def _selected_rect_under(
         self, position: Point, pointer_id: str, canvas: Canvas
@@ -588,8 +613,41 @@ class InteractionEngine:
             return
         self._clear_session(pointer_id)
 
-    def _on_grab_up(self, pointer_id: str) -> None:
+    def _on_grab_up(self, pointer_id: str, canvas: Canvas) -> None:
+        """Opening the hand over the trash zone deletes what it was holding."""
+        session = self._sessions.get(pointer_id)
+        if (
+            session is not None
+            and session.state == InteractionState.MOVING
+            and session.selected_id is not None
+        ):
+            shape = canvas.get(session.selected_id)
+            if shape is not None and self._over_trash(shape):
+                canvas.discard([shape.id])
         self._clear_session(pointer_id)
+
+    def _over_trash(self, shape: Shape) -> bool:
+        return point_in_rectangle(_shape_center(shape), trash_zone(), padding=0.0)
+
+    def pending_delete_ids(self, canvas: Canvas) -> set[str]:
+        """Held figures currently sitting in the trash zone (for highlighting)."""
+        armed: set[str] = set()
+        for session in self._sessions.values():
+            if session.state != InteractionState.MOVING or session.selected_id is None:
+                continue
+            shape = canvas.get(session.selected_id)
+            if shape is not None and self._over_trash(shape):
+                armed.add(shape.id)
+        return armed
+
+    def _clear_canvas(self, canvas: Canvas) -> None:
+        """Wipe every figure as one undoable batch and drop all sessions."""
+        ids = [shape.id for shape in canvas.shapes]
+        if not ids:
+            return
+        canvas.discard(ids)
+        for pointer_id in list(self._sessions):
+            self._clear_session(pointer_id)
 
     def _clear_session(self, pointer_id: str) -> None:
         self._sessions[pointer_id] = PointerSession()

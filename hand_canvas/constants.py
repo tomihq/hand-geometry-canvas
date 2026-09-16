@@ -33,6 +33,23 @@ FIST_FINGERS_OFF = 2
 # Index tip vs PIP distance from the wrist. Above this the finger is extended.
 INDEX_EXTENDED_RATIO = 1.08
 
+# --- Sweep to clear ---------------------------------------------------------
+# Open palm dragged sideways wipes the canvas. Deliberately demanding: an open
+# palm is far from both pinch and fist, and the travel has to be a real swipe.
+SWEEP_TRAVEL_FRAMES = 10
+SWEEP_MIN_TRAVEL = 0.35
+# Horizontal dominance: |dx| must exceed this multiple of |dy|.
+SWEEP_HORIZONTAL_RATIO = 2.0
+# Frames to wait after a sweep before another can fire (one swipe, one wipe).
+SWEEP_COOLDOWN_FRAMES = 20
+
+# --- Delete by dropping a figure in the trash zone --------------------------
+# Normalized frame coords, bottom-right corner. Roughly square at 4:3.
+TRASH_ZONE_X = 0.83
+TRASH_ZONE_Y = 0.76
+TRASH_ZONE_W = 0.17
+TRASH_ZONE_H = 0.24
+
 # Max distance (normalized) to select an existing point / corner handle.
 HIT_RADIUS = 0.035
 CORNER_HIT_RADIUS = 0.07
@@ -51,8 +68,8 @@ MIN_RECT_SIZE = 0.01
 
 # Display window (OpenCV)
 WINDOW_NAME = "Hand Geometry Canvas"
-WINDOW_WIDTH = 640
-WINDOW_HEIGHT = 480
+WINDOW_WIDTH = 1024
+WINDOW_HEIGHT = 768
 
 # Hand skeleton, gesture text and drag markers. Toggle at runtime with 'd'.
 SHOW_DEBUG_OVERLAY = False

@@ -25,7 +25,7 @@ from hand_canvas.constants import (
 from hand_canvas.gestures import GestureState, MultiHandGestureDetector
 from hand_canvas.gpu_renderer import GpuCanvasRenderer
 from hand_canvas.hand_tracker import Hand, HandTracker
-from hand_canvas.interaction import InteractionEngine, InteractionState
+from hand_canvas.interaction import InteractionEngine, InteractionState, trash_zone
 from hand_canvas.geometry import Point
 
 
@@ -48,6 +48,46 @@ DEFAULT_COLORS = ((200, 200, 200), (160, 160, 160))
 
 def _to_px(point: Point, width: int, height: int) -> tuple[int, int]:
     return int(point.x * width), int(point.y * height)
+
+
+def draw_trash_zone(image: np.ndarray, armed: bool, undo_depth: int) -> None:
+    """Drop target for deleting a held figure; glows red once armed."""
+    h, w = image.shape[:2]
+    zone = trash_zone()
+    x1, y1 = int(zone.x * w), int(zone.y * h)
+    x2, y2 = int((zone.x + zone.width) * w), int((zone.y + zone.height) * h)
+
+    color = (60, 60, 235) if armed else (150, 150, 150)
+    overlay = image.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    cv2.addWeighted(overlay, 0.30 if armed else 0.15, image, 0.70 if armed else 0.85, 0, image)
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, 2 if armed else 1)
+
+    # Bin glyph: lid plus body
+    cx = (x1 + x2) // 2
+    bin_w = max(int((x2 - x1) * 0.34), 8)
+    lid_y = y1 + int((y2 - y1) * 0.30)
+    body_bottom = y2 - int((y2 - y1) * 0.22)
+    cv2.line(image, (cx - bin_w, lid_y), (cx + bin_w, lid_y), color, 2)
+    cv2.rectangle(
+        image,
+        (cx - int(bin_w * 0.75), lid_y + 3),
+        (cx + int(bin_w * 0.75), body_bottom),
+        color,
+        2,
+    )
+
+    label = "DROP" if armed else (f"undo z ({undo_depth})" if undo_depth else "trash")
+    cv2.putText(
+        image,
+        label,
+        (x1 + 6, y2 - 6),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.38,
+        color,
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def _colors_for(handedness: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -191,8 +231,11 @@ def run() -> int:
 
         show_debug = SHOW_DEBUG_OVERLAY
         print(
-            "Hand Geometry Canvas running (2 hands). "
-            "Press 'd' to toggle the debug overlay, 'q' to quit."
+            "Hand Geometry Canvas running (2 hands).\n"
+            "  Delete: grab a figure with a fist and open your hand over the "
+            "trash zone (bottom-right).\n"
+            "  Clear all: swipe an open palm sideways across the frame.\n"
+            "  Keys: 'z' undo delete, 'd' debug overlay, 'q' quit."
         )
 
         while True:
@@ -211,6 +254,11 @@ def run() -> int:
                     background=frame.image,
                     selected_ids=selected,
                 )
+            draw_trash_zone(
+                display,
+                armed=bool(interaction.pending_delete_ids(canvas)),
+                undo_depth=canvas.trash_depth,
+            )
             if show_debug:
                 draw_debug(
                     display,
@@ -228,6 +276,10 @@ def run() -> int:
                 break
             if key == ord("d"):
                 show_debug = not show_debug
+            if key == ord("z"):
+                restored = canvas.restore_last()
+                if restored:
+                    print(f"Restored {len(restored)} figure(s).")
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except Exception as exc:  # noqa: BLE001
