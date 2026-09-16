@@ -1,4 +1,7 @@
-"""2D canvas rendering with OpenCV — no MediaPipe / landmark knowledge."""
+"""2D canvas — shape store + CPU render fallback.
+
+GPU compositing lives in ``gpu_renderer.GpuCanvasRenderer`` (OpenGL).
+"""
 
 from __future__ import annotations
 
@@ -79,7 +82,8 @@ class Canvas:
                 if distance(target, shape.position) <= point_radius:
                     hits.append(shape)
             elif isinstance(shape, Rectangle):
-                if point_in_rectangle(target, shape, padding=point_radius * 0.25):
+                # Exact bounds only — no padding so empty-space create isn't blocked
+                if point_in_rectangle(target, shape, padding=0.0):
                     hits.append(shape)
 
         if not hits:

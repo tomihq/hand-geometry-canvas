@@ -18,6 +18,7 @@ from hand_canvas.camera import Camera
 from hand_canvas.canvas import Canvas
 from hand_canvas.constants import WINDOW_HEIGHT, WINDOW_NAME, WINDOW_WIDTH
 from hand_canvas.gestures import GestureState, MultiHandGestureDetector
+from hand_canvas.gpu_renderer import GpuCanvasRenderer
 from hand_canvas.hand_tracker import Hand, HandTracker
 from hand_canvas.interaction import InteractionEngine, InteractionState
 from hand_canvas.geometry import Point
@@ -86,9 +87,13 @@ def draw_debug(
     hands: list[Hand],
     gesture_states: dict[str, GestureState],
     interaction: InteractionEngine,
+    pinch_dists: dict[str, float] | None = None,
+    pinch_thresholds: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     h, w = image.shape[:2]
     debug = interaction.debug
+    pinch_dists = pinch_dists or {}
+    pinch_thresholds = pinch_thresholds or {}
 
     for hand in hands:
         _draw_hand(image, hand)
@@ -113,6 +118,11 @@ def draw_debug(
         lines.append(f"Lock: {debug.lock_owner} → {debug.selected_id or '-'}")
     for pid, gstate in sorted(gesture_states.items()):
         session = debug.sessions.get(pid)
+        dist = pinch_dists.get(pid)
+        thr = pinch_thresholds.get(pid)
+        dist_txt = ""
+        if dist is not None and thr is not None:
+            dist_txt = f"  d={dist:.3f}/{thr[0]:.3f}"
         if session is not None and session.state != InteractionState.IDLE:
             role = "owner" if session.is_owner else "resize"
             label = f"{session.state.value}({role})"
@@ -120,7 +130,7 @@ def draw_debug(
         else:
             label = gstate.value
             obj = "-"
-        lines.append(f"{pid}: {label}  obj={obj}")
+        lines.append(f"{pid}: {label}{dist_txt}  obj={obj}")
 
     y = 28
     for line in lines:
@@ -155,12 +165,14 @@ def run() -> int:
         height=WINDOW_HEIGHT,
     )
     tracker: HandTracker | None = None
+    gpu: GpuCanvasRenderer | None = None
     try:
         camera.open()
         tracker = HandTracker(num_hands=2)
         gestures = MultiHandGestureDetector()
         interaction = InteractionEngine()
         canvas = Canvas()
+        gpu = GpuCanvasRenderer.try_create(WINDOW_WIDTH, WINDOW_HEIGHT)
 
         # WINDOW_GUI_NORMAL: no toolbar/buttons. WINDOW_NORMAL: resizable.
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
@@ -174,13 +186,24 @@ def run() -> int:
             events = gestures.update(hands)
             interaction.handle(events, canvas)
 
-            display = canvas.render(
-                frame.width,
-                frame.height,
-                background=frame.image,
-                selected_ids=interaction.selected_ids(),
+            selected = interaction.selected_ids()
+            if gpu is not None:
+                display = gpu.render(canvas, frame.image, selected_ids=selected)
+            else:
+                display = canvas.render(
+                    frame.width,
+                    frame.height,
+                    background=frame.image,
+                    selected_ids=selected,
+                )
+            draw_debug(
+                display,
+                hands,
+                gestures.states,
+                interaction,
+                pinch_dists=gestures.pinch_dists,
+                pinch_thresholds=gestures.pinch_thresholds,
             )
-            draw_debug(display, hands, gestures.states, interaction)
 
             cv2.imshow(WINDOW_NAME, display)
             key = cv2.waitKey(1) & 0xFF
@@ -194,6 +217,8 @@ def run() -> int:
     finally:
         if tracker is not None:
             tracker.close()
+        if gpu is not None:
+            gpu.close()
         camera.release()
         cv2.destroyAllWindows()
 
