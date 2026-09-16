@@ -89,11 +89,13 @@ def draw_debug(
     interaction: InteractionEngine,
     pinch_dists: dict[str, float] | None = None,
     pinch_thresholds: dict[str, tuple[float, float]] | None = None,
+    fist_scores: dict[str, int] | None = None,
 ) -> None:
     h, w = image.shape[:2]
     debug = interaction.debug
     pinch_dists = pinch_dists or {}
     pinch_thresholds = pinch_thresholds or {}
+    fist_scores = fist_scores or {}
 
     for hand in hands:
         _draw_hand(image, hand)
@@ -120,8 +122,11 @@ def draw_debug(
         session = debug.sessions.get(pid)
         dist = pinch_dists.get(pid)
         thr = pinch_thresholds.get(pid)
+        fist = fist_scores.get(pid)
         dist_txt = ""
-        if dist is not None and thr is not None:
+        if gstate == GestureState.FIST and fist is not None:
+            dist_txt = f"  fist={fist}/4"
+        elif dist is not None and thr is not None:
             dist_txt = f"  d={dist:.3f}/{thr[0]:.3f}"
         if session is not None and session.state != InteractionState.IDLE:
             role = "owner" if session.is_owner else "resize"
@@ -203,6 +208,7 @@ def run() -> int:
                 interaction,
                 pinch_dists=gestures.pinch_dists,
                 pinch_thresholds=gestures.pinch_thresholds,
+                fist_scores=gestures.fist_scores,
             )
 
             cv2.imshow(WINDOW_NAME, display)

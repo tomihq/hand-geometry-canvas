@@ -9,14 +9,15 @@ use a pre-batch canvas snapshot so one create cannot steal the other hand's
 empty-space target. Newly created points stay selected (STRETCHING) by default.
 
 Gestures:
-  - Pinch → create point / stretch / resize corners
+  - Pinch → create point / stretch / resize
   - Closed fist on a figure → select + move; open hand → release
 
 Lock model (two hands on one figure):
-  - First hand to grab a figure becomes the owner (lock): can move or resize.
-  - Second hand cannot steal the lock and cannot move the figure.
-  - Second hand only resizes, and cannot take over a corner already held by
-    the other hand — that corner stays pinned to the owner's finger.
+  - First hand to grab a figure becomes the owner (lock): can move.
+  - Second hand: any action that starts inside the locked figure latches on
+    and follows that hand's movement to resize (gesture type does not matter).
+  - Second hand cannot steal the lock or move the figure.
+  - A corner held by the owner stays pinned to the owner's finger.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from hand_canvas.constants import (
     CORNER_HIT_RADIUS,
+    GRAB_HIT_PADDING,
     HELPER_HIT_PADDING,
     HIT_RADIUS,
     MIN_RECT_SIZE,
@@ -48,7 +50,6 @@ from hand_canvas.geometry import (
     Rectangle,
     Shape,
     nearest_corner,
-    nearest_corner_any,
     nearest_corner_excluding,
     point_in_rectangle,
     rectangle_from_points,
@@ -189,32 +190,29 @@ class InteractionEngine:
             self._handle_downs_parallel(downs, canvas)
         if grab_downs:
             self._handle_grab_downs_parallel(grab_downs, canvas)
-        if moves:
-            self._handle_moves_parallel(moves, canvas)
+        # Acquire with fist before composing moves (helper may start RESIZING)
         if grab_moves:
-            self._handle_grab_moves_parallel(grab_moves, canvas)
+            self._acquire_from_grab_moves(grab_moves, canvas)
+        # Owner MOVING first, then helper RESIZING on the updated shape
+        combined_moves = list(moves) + [
+            PointerMove(position=m.position, pointer_id=m.pointer_id)
+            for m in grab_moves
+        ]
+        if combined_moves:
+            self._handle_moves_composed(combined_moves, canvas)
         for up in ups:
             self._on_pointer_up(up.pointer_id)
         for up in grab_ups:
             self._on_grab_up(up.pointer_id)
 
-    def _resolve_pinch_target(
+    def _selected_rect_under(
         self, position: Point, pointer_id: str, canvas: Canvas
-    ) -> Shape | None:
-        """Hit-test for pinch; also snap onto figures locked by the other hand."""
-        hit = canvas.hit_test(position.x, position.y, self._hit_radius)
-        if hit is not None:
-            return hit
-
-        # Helper: pinch near a figure someone else is holding → still count as hit
+    ) -> Rectangle | None:
+        """Rectangle another hand already holds, if ``position`` is over it."""
         for pid, session in self._sessions.items():
             if pid == pointer_id or session.selected_id is None:
                 continue
-            if session.state not in (
-                InteractionState.MOVING,
-                InteractionState.RESIZING,
-                InteractionState.STRETCHING,
-            ):
+            if session.state == InteractionState.IDLE:
                 continue
             shape = canvas.get(session.selected_id)
             if isinstance(shape, Rectangle) and point_in_rectangle(
@@ -222,6 +220,16 @@ class InteractionEngine:
             ):
                 return shape
         return None
+
+    def _resolve_pinch_target(
+        self, position: Point, pointer_id: str, canvas: Canvas
+    ) -> Shape | None:
+        """Hit-test for pinch; locked selection by the other hand wins."""
+        locked = self._selected_rect_under(position, pointer_id, canvas)
+        if locked is not None:
+            return locked
+
+        return canvas.hit_test(position.x, position.y, self._hit_radius)
 
     def _handle_downs_parallel(
         self, downs: list[PointerDown], canvas: Canvas
@@ -258,6 +266,29 @@ class InteractionEngine:
         for plan in pinch_hits:
             self._apply_pinch_hit(plan.pointer_id, plan.position, plan.hit, canvas)
 
+    def _resolve_grab_target(
+        self, position: Point, canvas: Canvas, pointer_id: str | None = None
+    ) -> Shape | None:
+        """Hit-test for fist grab; prefer a figure the other hand already holds."""
+        if pointer_id is not None:
+            locked = self._selected_rect_under(position, pointer_id, canvas)
+            if locked is not None:
+                return locked
+
+        best: Shape | None = None
+        best_key = (-1.0, -1)
+        for shape in canvas.shapes:
+            if isinstance(shape, Rectangle) and point_in_rectangle(
+                position, shape, padding=GRAB_HIT_PADDING
+            ):
+                key = (shape.width * shape.height, shape.z)
+                if key > best_key:
+                    best = shape
+                    best_key = key
+        if best is not None:
+            return best
+        return canvas.hit_test(position.x, position.y, self._hit_radius)
+
     def _handle_grab_downs_parallel(
         self, grabs: list[GrabDown], canvas: Canvas
     ) -> None:
@@ -265,8 +296,8 @@ class InteractionEngine:
             _DownPlan(
                 pointer_id=event.pointer_id,
                 position=event.position,
-                hit=canvas.hit_test(
-                    event.position.x, event.position.y, self._hit_radius
+                hit=self._resolve_grab_target(
+                    event.position, canvas, event.pointer_id
                 ),
             )
             for event in grabs
@@ -274,14 +305,21 @@ class InteractionEngine:
         for plan in plans:
             self._apply_fist_grab(plan.pointer_id, plan.position, plan.hit, canvas)
 
-    def _handle_grab_moves_parallel(
+    def _acquire_from_grab_moves(
         self, moves: list[GrabMove], canvas: Canvas
     ) -> None:
-        # Reuse move pipeline — only MOVING sessions respond
-        proxy = [
-            PointerMove(position=m.position, pointer_id=m.pointer_id) for m in moves
-        ]
-        self._handle_moves_parallel(proxy, canvas)
+        """Start move/resize from an ongoing fist when not already interacting."""
+        for move in moves:
+            session = self._sessions.get(move.pointer_id)
+            if session is not None and session.state in (
+                InteractionState.MOVING,
+                InteractionState.RESIZING,
+            ):
+                continue
+            hit = self._resolve_grab_target(
+                move.position, canvas, move.pointer_id
+            )
+            self._apply_fist_grab(move.pointer_id, move.position, hit, canvas)
 
     def _select_new_point(
         self, pointer_id: str, point: PointShape, position: Point
@@ -298,6 +336,25 @@ class InteractionEngine:
         session.shape_size = None
         session.state = InteractionState.STRETCHING
 
+    def _start_helper_follow(
+        self,
+        pointer_id: str,
+        position: Point,
+        canvas: Canvas,
+    ) -> bool:
+        """If another hand holds a rect and we start inside it, follow to resize."""
+        locked = self._selected_rect_under(position, pointer_id, canvas)
+        if locked is None:
+            return False
+        return self._begin_resize(
+            self._session(pointer_id),
+            locked,
+            position,
+            is_owner=False,
+            pointer_id=pointer_id,
+            prefer_near_corner=False,
+        )
+
     def _apply_pinch_hit(
         self,
         pointer_id: str,
@@ -305,8 +362,12 @@ class InteractionEngine:
         hit: Shape,
         canvas: Canvas,
     ) -> None:
-        """Pinch on shapes: stretch points or resize rectangle corners (no move)."""
+        """Pinch on shapes: stretch points or resize (no move)."""
         session = self._session(pointer_id)
+
+        # Locked by the other hand → follow this hand (any pinch inside)
+        if self._start_helper_follow(pointer_id, position, canvas):
+            return
 
         if isinstance(hit, PointShape):
             if self._owner_of(hit.id) is not None:
@@ -324,32 +385,6 @@ class InteractionEngine:
             return
 
         if isinstance(hit, Rectangle):
-            owner = self._owner_of(hit.id)
-            # Other hand already holds it → always allow dimension changes
-            if owner is not None and owner != pointer_id:
-                ok = self._begin_resize(
-                    session,
-                    hit,
-                    position,
-                    is_owner=False,
-                    pointer_id=pointer_id,
-                    prefer_near_corner=False,
-                )
-                if ok:
-                    return
-                excluded = self._held_corners(hit.id, exclude_pointer=pointer_id)
-                corner = nearest_corner_excluding(position, hit, excluded)
-                if corner is None:
-                    corner = nearest_corner_any(position, hit)
-                    if corner in excluded:
-                        return
-                session.selected_id = hit.id
-                session.is_owner = False
-                session.active_corner = corner
-                session.last_pointer = Point(position.x, position.y)
-                session.state = InteractionState.RESIZING
-                return
-
             canvas.bring_to_front(hit.id)
             corner = nearest_corner(position, hit, self._corner_radius)
             if corner is not None:
@@ -370,13 +405,16 @@ class InteractionEngine:
         hit: Shape | None,
         canvas: Canvas,
     ) -> None:
-        """Closed fist over a rectangle → lock + move. Open hand releases."""
+        """Fist: own+move, or if another hand already holds it → follow/resize."""
+        # Locked by the other hand and we started inside → follow movement
+        if self._start_helper_follow(pointer_id, position, canvas):
+            return
+
         if not isinstance(hit, Rectangle):
             return
 
         owner = self._owner_of(hit.id)
         if owner is not None and owner != pointer_id:
-            # Locked by another hand: fist cannot steal / move
             return
 
         session = self._session(pointer_id)
@@ -509,29 +547,39 @@ class InteractionEngine:
 
         return None
 
-    def _handle_moves_parallel(
+    def _handle_moves_composed(
         self, moves: list[PointerMove], canvas: Canvas
     ) -> None:
-        def compute(event: PointerMove) -> Shape | None:
-            result = self._compute_move(event.position, event.pointer_id, canvas)
-            return result[0] if result is not None else None
+        """Apply owner moves first, then helper resizes on the updated shape."""
+        by_pointer: dict[str, PointerMove] = {}
+        for event in moves:
+            by_pointer[event.pointer_id] = event
 
-        if len(moves) == 1:
-            shape = compute(moves[0])
-            if shape is not None:
-                canvas.update(shape)
-            return
+        stretching: list[PointerMove] = []
+        moving: list[PointerMove] = []
+        resizing: list[PointerMove] = []
+        for event in by_pointer.values():
+            session = self._sessions.get(event.pointer_id)
+            if session is None:
+                continue
+            if session.state == InteractionState.STRETCHING:
+                stretching.append(event)
+            elif session.state == InteractionState.MOVING:
+                moving.append(event)
+            elif session.state == InteractionState.RESIZING:
+                resizing.append(event)
 
-        with ThreadPoolExecutor(max_workers=len(moves)) as pool:
-            results = list(pool.map(compute, moves))
+        def apply_batch(batch: list[PointerMove]) -> None:
+            for event in batch:
+                result = self._compute_move(
+                    event.position, event.pointer_id, canvas
+                )
+                if result is not None:
+                    canvas.update(result[0])
 
-        # Commit by shape id — last write wins only across different ids usually
-        by_id: dict[str, Shape] = {}
-        for shape in results:
-            if shape is not None:
-                by_id[shape.id] = shape
-        for shape in by_id.values():
-            canvas.update(shape)
+        apply_batch(stretching)
+        apply_batch(moving)
+        apply_batch(resizing)
 
     def _on_pointer_up(self, pointer_id: str) -> None:
         session = self._sessions.get(pointer_id)
