@@ -320,7 +320,8 @@ def run() -> int:
         print(
             "Hand Geometry Canvas running (2 hands).\n"
             "  Delete: grab a figure with a fist and carry it to the trash zone "
-            "(bottom-right). It shrinks as you approach and is swallowed there.\n"
+            "(bottom-right). It settles into your hand as you approach; open "
+            "your hand inside the zone to drop it in.\n"
             "  Clear all: swipe an open palm sideways across the frame.\n"
             "  Keys: 'z' undo delete, 'd' debug overlay, 'q' quit."
         )

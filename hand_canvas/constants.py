@@ -50,15 +50,13 @@ TRASH_ZONE_Y = 0.76
 TRASH_ZONE_W = 0.17
 TRASH_ZONE_H = 0.24
 
-# The bin reaches out for a held figure: from this far away it starts pulling it
-# in, shrinking it down to TRASH_PULL_MIN_SCALE of its size at the mouth. Reads
-# as suction, and warns before anything is deleted.
+# Coming this close to the bin, a held figure settles onto the hand and shrinks
+# to fit in the zone, so you can aim it. Deleting still takes opening the hand.
 TRASH_PULL_RADIUS = 0.22
-TRASH_PULL_MIN_SCALE = 0.3
-
-# Close enough to be swallowed on the spot, no need to open the hand. Slightly
-# outside the zone, so the hand never has to reach the very corner of the frame.
-TRASH_SWALLOW_DISTANCE = 0.03
+# Target size at the mouth: this fraction of the zone, floored so a big figure
+# never turns into a speck.
+TRASH_FIT_MARGIN = 0.7
+TRASH_PULL_MIN_SCALE = 0.25
 
 # Max distance (normalized) to select an existing point / corner handle.
 HIT_RADIUS = 0.035
