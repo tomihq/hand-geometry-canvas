@@ -17,6 +17,18 @@ MIN_HAND_SCALE = 1e-3
 PINCH_RATIO_ON = 0.32
 PINCH_RATIO_OFF = 0.55
 
+# Letting go is judged against the gap actually being held, not only the fixed
+# figure above. A pinch held loosely enters at ~0.30, right on PINCH_RATIO_ON,
+# which leaves barely two centimetres of finger travel before 0.55: relaxing
+# slightly while dragging read as a release and committed the figure half-drawn.
+# Scaling the exit off the held gap gives tight and loose pinches the same
+# margin, and PINCH_RATIO_OFF stays the floor so a tight pinch is unaffected.
+PINCH_RELEASE_FACTOR = 2.2
+# Ceiling, so a pinch held very loosely can still be released by pulling apart.
+PINCH_RELEASE_MAX = 0.85
+# Frames of held pinch that define the reference gap.
+PINCH_BASELINE_FRAMES = 20
+
 # Where the thumb–index midpoint sits relative to the palm center. A pinch
 # reaches out (0.8–1.2); a closed hand keeps the tips over the palm (~0.2).
 # The gap between the two is a deliberate no-man's land: neither gesture fires.

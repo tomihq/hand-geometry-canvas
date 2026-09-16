@@ -189,7 +189,7 @@ def draw_debug(
         fist = fist_scores.get(pid)
         parts = []
         if dist is not None and thr is not None:
-            parts.append(f"d={dist:.3f}/{thr[0]:.3f}")
+            parts.append(f"d={dist:.3f} on<{thr[0]:.2f} off>{thr[1]:.2f}")
         if fist is not None:
             parts.append(f"fist={fist}/4")
         dist_txt = f"  {'  '.join(parts)}" if parts else ""

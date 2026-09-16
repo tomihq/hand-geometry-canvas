@@ -14,6 +14,8 @@ Landmarks are noisy, so nothing here compares raw distances:
      outlier frame can never start or stop a gesture.
   3. Thresholds come in ON/OFF pairs. Between them lies a margin band where
      the previous state simply holds, instead of flapping on borderline values.
+     A pinch scales its own OFF threshold off the gap it is holding, so the
+     band is as wide for a loose pinch as for a tight one.
 
 Both gestures must be deliberate, so a relaxed or half-closed hand does nothing:
   - Grab: fingertips tucked onto the palm (index included), held briefly.
@@ -37,8 +39,11 @@ from hand_canvas.constants import (
     GESTURE_WINDOW_FRAMES,
     INDEX_EXTENDED_RATIO,
     MIN_HAND_SCALE,
+    PINCH_BASELINE_FRAMES,
     PINCH_RATIO_OFF,
     PINCH_RATIO_ON,
+    PINCH_RELEASE_FACTOR,
+    PINCH_RELEASE_MAX,
     PINCH_TIPS_PALM_MIN,
     SWEEP_COOLDOWN_FRAMES,
     SWEEP_HORIZONTAL_RATIO,
@@ -145,6 +150,7 @@ class GestureDetector:
         self._palm_track: deque[tuple[Point, bool]] = deque(
             maxlen=SWEEP_TRAVEL_FRAMES
         )
+        self._pinch_baseline: deque[float] = deque(maxlen=PINCH_BASELINE_FRAMES)
         self._sweep_cooldown = 0
         self.state = GestureState.IDLE
         self._was_pinching = False
@@ -152,6 +158,7 @@ class GestureDetector:
         self._last_cursor = Point(0.5, 0.5)
         self._last_palm = Point(0.5, 0.5)
         self.last_pinch_ratio = 1.0
+        self.last_release_ratio = PINCH_RATIO_OFF
         self.last_fist_score = 0
 
     def _smoothed(self) -> HandMetrics:
@@ -170,6 +177,21 @@ class GestureDetector:
             palm=latest.palm,
             pinch_point=latest.pinch_point,
             index_point=latest.index_point,
+        )
+
+    def _pinch_release_ratio(self) -> float:
+        """The gap that counts as letting go of the pinch being held.
+
+        Measured against the gap the pinch has actually been holding, because
+        the same absolute band means very different things: a pinch entered at
+        0.30 is a couple of centimetres from PINCH_RATIO_OFF, so relaxing the
+        fingers mid-drag released it and committed the figure half-drawn.
+        """
+        if not self._pinch_baseline:
+            return PINCH_RATIO_OFF
+        held = float(np.median(self._pinch_baseline))
+        return min(
+            PINCH_RELEASE_MAX, max(PINCH_RATIO_OFF, held * PINCH_RELEASE_FACTOR)
         )
 
     def _swept(self) -> bool:
@@ -211,8 +233,10 @@ class GestureDetector:
             events = self._release_all()
             self._history.clear()
             self._palm_track.clear()
+            self._pinch_baseline.clear()
             self.state = GestureState.IDLE
             self.last_pinch_ratio = 1.0
+            self.last_release_ratio = PINCH_RATIO_OFF
             self.last_fist_score = 0
             return events
 
@@ -248,7 +272,12 @@ class GestureDetector:
         pinch_pose = (
             m.pinch < PINCH_RATIO_ON and tips_reaching_out and not closed_hand
         )
-        pinch_released = m.pinch > PINCH_RATIO_OFF
+        # Only frames that unambiguously read as held feed the reference, so a
+        # hand on its way open cannot drag its own exit threshold up with it.
+        if self._was_pinching and m.pinch <= PINCH_RATIO_OFF:
+            self._pinch_baseline.append(m.pinch)
+        self.last_release_ratio = self._pinch_release_ratio()
+        pinch_released = m.pinch > self.last_release_ratio
 
         events: list[PointerEvent] = []
 
@@ -324,6 +353,7 @@ class GestureDetector:
         return events
 
     def _begin_pinch(self, pinch_pos: Point) -> list[PointerEvent]:
+        self._pinch_baseline.clear()
         self._was_pinching = True
         self._last_cursor = pinch_pos
         self.state = GestureState.PINCHING
@@ -379,8 +409,10 @@ class MultiHandGestureDetector:
 
     @property
     def pinch_thresholds(self) -> dict[str, tuple[float, float]]:
+        """Entry threshold plus the live exit, which follows the held gap."""
         return {
-            pid: (PINCH_RATIO_ON, PINCH_RATIO_OFF) for pid in self._detectors
+            pid: (PINCH_RATIO_ON, det.last_release_ratio)
+            for pid, det in self._detectors.items()
         }
 
     @property
