@@ -35,6 +35,15 @@ PINCH_BASELINE_FRAMES = 20
 PINCH_TIPS_PALM_MIN = 0.55
 FIST_TIPS_PALM_MAX = 0.45
 
+# The measure above only describes a pinch made with the index still straight,
+# thumb brought up to meet its tip. Curl the index round until the tips truly
+# touch — the firmest pinch there is — and the contact point ends up sitting
+# over the palm, reading 0.32, right inside the fist's own band. So a pinch is
+# also accepted when the fingers that take no part in it are clearly out of the
+# palm, which is what a fist can never do: measured over the middle, ring and
+# pinky, a fist stays under 0.51 while any pinch is past 0.84.
+PINCH_FREE_FINGERS_MIN = 0.70
+
 # Fingertip-to-palm distance / hand size, per finger. Curled reads ~0.25,
 # extended reads well past 1.0.
 FIST_CURL_RATIO_ON = 0.75
@@ -44,6 +53,31 @@ FIST_FINGERS_OFF = 2
 
 # Index tip vs PIP distance from the wrist. Above this the finger is extended.
 INDEX_EXTENDED_RATIO = 1.08
+
+# --- Holding a grab ---------------------------------------------------------
+# Starting a fist takes a deliberate hold (GESTURE_WINDOW_FRAMES). Letting go
+# is the opposite problem. A travelling arm smears the fingers in the camera
+# for the whole length of the swing, not for one stray frame: the curl ratios
+# read open, and the figure used to be dropped in the middle of the throw. So
+# a release has to be confirmed over consecutive frames, and over more of them
+# while the hand is moving, which is when an open reading is least believable.
+#
+# These stack on top of the median window: the median needs three of its five
+# frames to turn before `hand_opened` is even true. A still hand therefore
+# releases after ~5 frames, a travelling one after ~8.
+FIST_RELEASE_FRAMES = 2
+FIST_RELEASE_FRAMES_MOVING = 5
+
+# Palm speed (frame widths per second) above which the hand counts as moving.
+FIST_MOVING_SPEED = 0.6
+
+# Window the palm speed is read over, and how many samples to keep for it.
+HAND_SPEED_SPAN = 0.08
+HAND_SPEED_SAMPLES = 12
+
+# Frames a held gesture survives with no hand detected at all. Tracking drops
+# out precisely when motion blur is worst, i.e. mid-throw.
+HAND_LOST_GRACE_FRAMES = 3
 
 # --- Sweep to clear ---------------------------------------------------------
 # Open palm dragged sideways wipes the canvas. Deliberately demanding: an open
@@ -84,8 +118,40 @@ GRAB_HIT_PADDING = 0.03
 # Slightly looser when helping resize a figure locked by the other hand.
 HELPER_HIT_PADDING = 0.04
 
-# EMA smoothing: smoothed = alpha * current + (1 - alpha) * previous
-SMOOTH_ALPHA = 0.4
+# --- Landmark smoothing (one-euro) ------------------------------------------
+# A fixed-alpha EMA has to pick one compromise, and pays for it either way:
+# enough smoothing to kill jitter costs a fixed lag, which a fast hand turns
+# into a figure trailing well behind the palm. Here the filter cutoff rises
+# with the measured speed, so jitter is filtered while the hand rests and a
+# throw passes through almost untouched.
+#
+# Cutoff (Hz) with the hand at a standstill: the jitter floor.
+SMOOTH_MIN_CUTOFF = 1.5
+# How much the cutoff opens up per unit of speed (frame widths per second).
+SMOOTH_BETA = 2.5
+# Cutoff for the speed estimate itself, which is noisier than the position.
+SMOOTH_DERIVATIVE_CUTOFF = 1.0
+
+# --- Throwing a figure ------------------------------------------------------
+# Letting go of a moving figure hands it the hand's own velocity, in frame
+# widths per second. Drag is exponential, so the travel is speed * TAU: a
+# throw at 2 widths/s covers about half the frame before stopping, which makes
+# distance predictable from how hard you threw.
+FLING_DECAY_TAU = 0.26
+# Below this a release is a drop, not a throw, and nothing flies.
+FLING_MIN_SPEED = 0.55
+# Ceiling, so a tracking glitch cannot fire a figure across the frame.
+FLING_MAX_SPEED = 2.8
+# The flight ends here rather than creeping to a halt over several seconds.
+FLING_STOP_SPEED = 0.05
+# Fraction of the speed kept after hitting an edge of the canvas. Well under 1
+# so a thrown figure settles inside instead of rattling between the borders.
+FLING_BOUNCE_RESTITUTION = 0.45
+# Window of hand positions the throw speed is read from, and the shortest span
+# between two of them worth dividing by.
+FLING_SAMPLE_WINDOW = 0.3
+FLING_MIN_SPAN = 0.05
+FLING_TRAIL_SAMPLES = 16
 
 # Smallest figure allowed on the canvas, required on *both* width and height.
 # Anything under this is a sliver or a stray dot rather than a figure, so it is
@@ -129,3 +195,8 @@ TRACKING_MAX_WIDTH = 640
 
 # Print a rolling FPS figure in the window title.
 SHOW_FPS = True
+
+# Every millisecond of loop time is a millisecond the figure lags the hand, so
+# when the frame rate is disappointing the question is always which stage ate
+# it. Turn this on to print median per-stage times instead of guessing.
+SHOW_STAGE_TIMINGS = False

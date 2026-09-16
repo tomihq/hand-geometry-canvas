@@ -9,6 +9,7 @@ both hands in one frame; sessions are keyed by handedness (Left / Right).
 
 from __future__ import annotations
 
+import statistics
 import sys
 import time
 from collections import deque
@@ -24,6 +25,7 @@ from hand_canvas.constants import (
     CAMERA_WIDTH,
     SHOW_DEBUG_OVERLAY,
     SHOW_FPS,
+    SHOW_STAGE_TIMINGS,
     WINDOW_HEIGHT,
     WINDOW_NAME,
     WINDOW_WIDTH,
@@ -249,6 +251,44 @@ class FpsMeter:
         return True
 
 
+class StageTimer:
+    """Where each frame's time went, in medians.
+
+    Latency is the whole game here: every millisecond of loop time is a
+    millisecond the figure spends behind the hand. Knowing the frame rate is
+    disappointing says nothing about which stage to attack, and a mean hides
+    the occasional stall that a median does not.
+    """
+
+    def __init__(self, window: int = 120, every: float = 2.0) -> None:
+        self._samples: dict[str, deque[float]] = {}
+        self._window = window
+        self._every = every
+        self._last_report = time.perf_counter()
+        self._mark = time.perf_counter()
+
+    def restart(self) -> None:
+        self._mark = time.perf_counter()
+
+    def split(self, name: str) -> None:
+        """Book the time since the previous split against stage ``name``."""
+        now = time.perf_counter()
+        samples = self._samples.setdefault(name, deque(maxlen=self._window))
+        samples.append((now - self._mark) * 1000.0)
+        self._mark = now
+
+    def report(self) -> None:
+        now = time.perf_counter()
+        if now - self._last_report < self._every or not self._samples:
+            return
+        self._last_report = now
+        parts = [
+            f"{name} {statistics.median(samples):.1f}ms"
+            for name, samples in self._samples.items()
+        ]
+        print("  ".join(parts))
+
+
 class Hud:
     """The HUD is the only thing still rasterized on the CPU, so it is cached
     and rebuilt only when its contents actually change. With the debug overlay
@@ -317,8 +357,11 @@ def run() -> int:
         show_debug = SHOW_DEBUG_OVERLAY
         hud = Hud()
         fps = FpsMeter()
+        stages = StageTimer()
         print(
             "Hand Geometry Canvas running (2 hands).\n"
+            "  Throw: let go of a figure mid-swing and it keeps going at the "
+            "speed of your hand, bouncing off the edges.\n"
             "  Delete: grab a figure with a fist and take it to the trash zone "
             "(bottom-right). It settles into your hand as you approach, and "
             "anything inside the zone is deleted.\n"
@@ -327,10 +370,18 @@ def run() -> int:
         )
 
         while True:
+            stages.restart()
             frame = camera.read()
+            now = time.perf_counter()
+            stages.split("camera")
+
             hands = tracker.process(frame)
-            events = gestures.update(hands)
-            interaction.handle(events, canvas)
+            stages.split("track")
+
+            events = gestures.update(hands, now)
+            interaction.handle(events, canvas, now)
+            interaction.advance(canvas)
+            stages.split("logic")
 
             selected = interaction.selected_ids()
             armed = bool(interaction.pending_delete_ids(canvas))
@@ -383,6 +434,10 @@ def run() -> int:
                 restored = canvas.restore_last()
                 if restored:
                     print(f"Restored {len(restored)} figure(s).")
+
+            stages.split("present")
+            if SHOW_STAGE_TIMINGS:
+                stages.report()
 
             fps.tick()
             if SHOW_FPS and gpu is not None and fps.due():

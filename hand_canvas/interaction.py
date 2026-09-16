@@ -11,6 +11,8 @@ empty-space target. Newly created points stay selected (STRETCHING) by default.
 Gestures:
   - Pinch → create point / stretch / resize
   - Closed fist on a figure → select + move; open hand → release
+  - Letting go of a figure mid-swing throws it: it keeps travelling at the
+    hand's speed, slows down, and bounces off the edges of the canvas
   - Near the trash zone a held figure rides on the hand, sized to fit; the
     zone deletes anything inside it, dropped there or carried in
 
@@ -25,6 +27,8 @@ Lock model (two hands on one figure):
 from __future__ import annotations
 
 import math
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,6 +36,9 @@ from typing import TYPE_CHECKING
 
 from hand_canvas.constants import (
     CORNER_HIT_RADIUS,
+    FLING_MIN_SPAN,
+    FLING_SAMPLE_WINDOW,
+    FLING_TRAIL_SAMPLES,
     GRAB_HIT_PADDING,
     HELPER_HIT_PADDING,
     HIT_RADIUS,
@@ -69,9 +76,15 @@ from hand_canvas.geometry import (
     resize_rectangle_from_corner,
     translate_rectangle,
 )
+from hand_canvas.momentum import MomentumField
 
 if TYPE_CHECKING:
     from hand_canvas.canvas import Canvas
+
+
+# Longest frame the flight physics will integrate in one go. A hitch would
+# otherwise teleport a figure across the canvas in a single step.
+MAX_STEP = 0.1
 
 
 def trash_zone() -> Rectangle:
@@ -154,6 +167,11 @@ class PointerSession:
     # undoing — gives back the real figure rather than the shrunken husk.
     full_size: tuple[float, float] | None = None
     full_offset: Point | None = None
+    # Where the hand has been while dragging, so a release can read off how
+    # fast the figure was being carried and throw it at that speed.
+    trail: deque[tuple[float, Point]] = field(
+        default_factory=lambda: deque(maxlen=FLING_TRAIL_SAMPLES)
+    )
 
 
 @dataclass
@@ -181,6 +199,9 @@ class InteractionEngine:
         self._hit_radius = hit_radius
         self._corner_radius = corner_radius
         self._sessions: dict[str, PointerSession] = {}
+        self._momentum = MomentumField()
+        self._now = 0.0
+        self._dt = 0.0
 
     def _session(self, pointer_id: str) -> PointerSession:
         if pointer_id not in self._sessions:
@@ -252,8 +273,11 @@ class InteractionEngine:
             lock_owner=lock_owner,
         )
 
-    def handle(self, events: list[PointerEvent], canvas: Canvas) -> None:
+    def handle(
+        self, events: list[PointerEvent], canvas: Canvas, now: float | None = None
+    ) -> None:
         """Queue same-frame events and apply downs/moves in parallel batches."""
+        self._tick(now)
         downs = [e for e in events if isinstance(e, PointerDown)]
         moves = [e for e in events if isinstance(e, PointerMove)]
         ups = [e for e in events if isinstance(e, PointerUp)]
@@ -292,6 +316,23 @@ class InteractionEngine:
         if sweeps:
             self._clear_canvas(canvas)
         self._empty_trash_zone(canvas)
+
+    def _tick(self, now: float | None) -> None:
+        moment = time.perf_counter() if now is None else now
+        # The first frame has no previous stamp to measure against, and a long
+        # stall is not a time step the physics should integrate over.
+        self._dt = 0.0 if self._now == 0.0 else min(moment - self._now, MAX_STEP)
+        self._now = moment
+
+    def advance(self, canvas: Canvas) -> None:
+        """Move whatever is still in flight on by one frame."""
+        self._momentum.step(canvas, self._dt)
+        self._empty_trash_zone(canvas)
+
+    @property
+    def flying_ids(self) -> set[str]:
+        """Figures still coasting from a throw."""
+        return self._momentum.flying_ids
 
     def _selected_rect_under(
         self, position: Point, pointer_id: str, canvas: Canvas
@@ -508,11 +549,14 @@ class InteractionEngine:
             return
 
         session = self._session(pointer_id)
+        # Closing a fist on a figure still coasting catches it out of the air.
+        self._momentum.cancel(hit.id)
         canvas.bring_to_front(hit.id)
         session.selected_id = hit.id
         session.is_owner = True
         session.active_corner = None
         session.drag_origin = None
+        session.trail.clear()
         session.grab_pointer = Point(position.x, position.y)
         session.last_pointer = Point(position.x, position.y)
         session.shape_origin = Point(hit.x, hit.y)
@@ -541,6 +585,7 @@ class InteractionEngine:
         if corner is None:
             return False
 
+        self._momentum.cancel(shape.id)
         session.selected_id = shape.id
         session.is_owner = is_owner
         session.active_corner = corner
@@ -633,6 +678,7 @@ class InteractionEngine:
             dx = position.x - session.last_pointer.x
             dy = position.y - session.last_pointer.y
             session.last_pointer = Point(position.x, position.y)
+            session.trail.append((self._now, Point(position.x, position.y)))
             moved = translate_rectangle(shape, dx, dy)
             pulled = self._trash_pull(moved, position, session)
             if pulled is None and dx == 0.0 and dy == 0.0:
@@ -640,6 +686,51 @@ class InteractionEngine:
             return pulled or moved, session
 
         return None
+
+    def _throw(self, session: PointerSession, canvas: Canvas) -> None:
+        """Hand the released figure the speed it was being carried at."""
+        if session.selected_id is None:
+            return
+        shape = canvas.get(session.selected_id)
+        if not isinstance(shape, Rectangle):
+            return
+        # A figure the bin has reached for is not tracking the hand one to one,
+        # so its trail says nothing about how fast it is really going.
+        if session.full_size is not None:
+            return
+        vx, vy = self._release_velocity(session)
+        self._momentum.launch(shape.id, vx, vy)
+
+    def _release_velocity(self, session: PointerSession) -> tuple[float, float]:
+        """The fastest the hand was going shortly before it let go.
+
+        Not the speed at the instant of release: opening a fist is only
+        confirmed a few frames after the fingers start to move, and by then the
+        arm has begun to slow down, so the reading there is close to nothing.
+        Taking the peak of the recent window gives the speed of the swing and
+        ignores the tail where the arm was already stopping.
+        """
+        samples = [
+            (stamp, position)
+            for stamp, position in session.trail
+            if self._now - stamp <= FLING_SAMPLE_WINDOW
+        ]
+        best = (0.0, 0.0)
+        best_speed = 0.0
+        for index, (start_t, start_pos) in enumerate(samples):
+            for end_t, end_pos in samples[index + 1 :]:
+                span = end_t - start_t
+                # Dividing by a span of a millisecond turns jitter into speed.
+                if span < FLING_MIN_SPAN:
+                    continue
+                vx = (end_pos.x - start_pos.x) / span
+                vy = (end_pos.y - start_pos.y) / span
+                speed = math.hypot(vx, vy)
+                if speed > best_speed:
+                    best_speed = speed
+                    best = (vx, vy)
+                break
+        return best
 
     def _trash_pull(
         self, shape: Rectangle, hand: Point, session: PointerSession
@@ -752,7 +843,8 @@ class InteractionEngine:
         # Read the bin before restoring: the restore pulls the figure back out
         # of the hand, which would move it off the zone it was dropped into.
         binned = False
-        if session.state == InteractionState.MOVING and session.selected_id is not None:
+        was_moving = session.state == InteractionState.MOVING
+        if was_moving and session.selected_id is not None:
             shape = canvas.get(session.selected_id)
             binned = shape is not None and self._in_trash(session, shape)
 
@@ -763,6 +855,9 @@ class InteractionEngine:
         if binned and session.selected_id is not None:
             self._bin(session.selected_id, canvas)
             return
+
+        if was_moving:
+            self._throw(session, canvas)
 
         self._drop_unfinished(session, canvas)
         self._clear_session(pointer_id)
@@ -780,12 +875,15 @@ class InteractionEngine:
             for session in self._sessions.values()
             if session.state == InteractionState.STRETCHING
         }
+        # A figure passing through in mid-air is not being thrown away, it is
+        # just passing through. It gets eaten only if it comes to rest inside.
+        spared = drawing | self._momentum.flying_ids
         zone = trash_zone()
         doomed = [
             shape.id
             for shape in canvas.shapes
             if isinstance(shape, Rectangle)
-            and shape.id not in drawing
+            and shape.id not in spared
             and point_in_rectangle(_shape_center(shape), zone, padding=0.0)
         ]
         for shape_id in doomed:
@@ -793,6 +891,7 @@ class InteractionEngine:
 
     def _bin(self, shape_id: str, canvas: Canvas) -> None:
         """Delete a figure as the bin should: whole, and undoable to beside it."""
+        self._momentum.cancel(shape_id)
         for session in self._sessions.values():
             if session.selected_id == shape_id:
                 self._restore_pulled(session, canvas)
@@ -859,6 +958,7 @@ class InteractionEngine:
 
     def _clear_canvas(self, canvas: Canvas) -> None:
         """Wipe every figure as one undoable batch and drop all sessions."""
+        self._momentum.clear()
         for session in self._sessions.values():
             self._restore_pulled(session, canvas)
         ids = [shape.id for shape in canvas.shapes]

@@ -6,6 +6,7 @@ Does not know about geometry shapes or interaction.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,9 @@ from mediapipe.tasks.python import vision as mp_vision
 
 from hand_canvas.camera import Frame
 from hand_canvas.constants import (
-    SMOOTH_ALPHA,
+    SMOOTH_BETA,
+    SMOOTH_DERIVATIVE_CUTOFF,
+    SMOOTH_MIN_CUTOFF,
     TRACKING_MAX_WIDTH,
     USE_GPU_INFERENCE,
 )
@@ -43,30 +46,78 @@ MODEL_URL = (
 )
 
 
-class Smoother:
-    """Exponential moving average for normalized points."""
+# Frame spacing bounds for the filter. A stall — window drag, the first frame
+# after a hiccup — must not be read as a real time step, or the filter takes
+# the resulting jump for speed and stops smoothing altogether.
+NOMINAL_DT = 1.0 / 30.0
+MIN_DT = 1.0 / 240.0
+MAX_DT = 0.2
 
-    def __init__(self, alpha: float = SMOOTH_ALPHA) -> None:
-        self.alpha = alpha
+
+def _cutoff_alpha(cutoff: float, dt: float) -> float:
+    """EMA weight for a first-order low pass at ``cutoff`` Hz, sampled at dt."""
+    tau = 1.0 / (2.0 * math.pi * cutoff)
+    return 1.0 / (1.0 + tau / dt)
+
+
+class Smoother:
+    """One-euro filter for normalized points: smoothing that yields to speed.
+
+    The cutoff is not fixed — it opens up in proportion to how fast the point
+    is moving. Standing still, the hand is filtered hard and reads steady;
+    thrown across the frame, it is barely filtered at all and the lag that
+    used to leave a dragged figure trailing behind the palm goes away.
+    """
+
+    def __init__(
+        self,
+        min_cutoff: float = SMOOTH_MIN_CUTOFF,
+        beta: float = SMOOTH_BETA,
+        derivative_cutoff: float = SMOOTH_DERIVATIVE_CUTOFF,
+    ) -> None:
+        self._min_cutoff = min_cutoff
+        self._beta = beta
+        self._derivative_cutoff = derivative_cutoff
         self._previous: list[Point] | None = None
+        self._speeds: list[Point] | None = None
 
     def reset(self) -> None:
         self._previous = None
+        self._speeds = None
 
-    def smooth(self, points: list[Point]) -> list[Point]:
-        if self._previous is None or len(self._previous) != len(points):
+    def smooth(self, points: list[Point], dt: float = NOMINAL_DT) -> list[Point]:
+        if (
+            self._previous is None
+            or self._speeds is None
+            or len(self._previous) != len(points)
+        ):
             self._previous = list(points)
+            self._speeds = [Point(0.0, 0.0) for _ in points]
             return list(points)
 
+        speed_alpha = _cutoff_alpha(self._derivative_cutoff, dt)
         smoothed: list[Point] = []
-        for current, prev in zip(points, self._previous):
+        speeds: list[Point] = []
+        for current, prev, prev_speed in zip(points, self._previous, self._speeds):
+            speed = Point(
+                x=speed_alpha * (current.x - prev.x) / dt
+                + (1.0 - speed_alpha) * prev_speed.x,
+                y=speed_alpha * (current.y - prev.y) / dt
+                + (1.0 - speed_alpha) * prev_speed.y,
+            )
+            alpha = _cutoff_alpha(
+                self._min_cutoff + self._beta * math.hypot(speed.x, speed.y), dt
+            )
             smoothed.append(
                 Point(
-                    x=self.alpha * current.x + (1.0 - self.alpha) * prev.x,
-                    y=self.alpha * current.y + (1.0 - self.alpha) * prev.y,
+                    x=alpha * current.x + (1.0 - alpha) * prev.x,
+                    y=alpha * current.y + (1.0 - alpha) * prev.y,
                 )
             )
+            speeds.append(speed)
+
         self._previous = smoothed
+        self._speeds = speeds
         return smoothed
 
 
@@ -109,15 +160,14 @@ class HandTracker:
     def __init__(
         self,
         model_path: Path | None = None,
-        smooth_alpha: float = SMOOTH_ALPHA,
         num_hands: int = 2,
         use_gpu: bool = USE_GPU_INFERENCE,
     ) -> None:
         path = ensure_model(model_path or DEFAULT_MODEL_PATH)
         self._smoothers: dict[str, Smoother] = {}
-        self._smooth_alpha = smooth_alpha
         self._start_ns = time.perf_counter_ns()
         self._last_timestamp_ms = -1
+        self._last_frame_s: float | None = None
 
         delegates = [mp_python.BaseOptions.Delegate.CPU]
         if use_gpu:
@@ -170,7 +220,17 @@ class HandTracker:
         self._last_timestamp_ms = timestamp
         return timestamp
 
+    def _frame_dt(self) -> float:
+        """Seconds since the last processed frame, clamped to a sane range."""
+        now = time.perf_counter()
+        previous = self._last_frame_s
+        self._last_frame_s = now
+        if previous is None:
+            return NOMINAL_DT
+        return min(max(now - previous, MIN_DT), MAX_DT)
+
     def process(self, frame: Frame) -> list[Hand]:
+        dt = self._frame_dt()
         image = frame.image
         if TRACKING_MAX_WIDTH and image.shape[1] > TRACKING_MAX_WIDTH:
             scale = TRACKING_MAX_WIDTH / image.shape[1]
@@ -199,10 +259,8 @@ class HandTracker:
             seen.add(label)
 
             points = [Point(x=lm.x, y=lm.y) for lm in raw]
-            smoother = self._smoothers.setdefault(
-                label, Smoother(alpha=self._smooth_alpha)
-            )
-            smoothed = smoother.smooth(points)
+            smoother = self._smoothers.setdefault(label, Smoother())
+            smoothed = smoother.smooth(points, dt)
             hands.append(
                 Hand(
                     index_tip=smoothed[INDEX_TIP],
