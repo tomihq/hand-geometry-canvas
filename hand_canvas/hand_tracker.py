@@ -6,16 +6,22 @@ Does not know about geometry shapes or interaction.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from hand_canvas.camera import Frame
-from hand_canvas.constants import SMOOTH_ALPHA
+from hand_canvas.constants import (
+    SMOOTH_ALPHA,
+    TRACKING_MAX_WIDTH,
+    USE_GPU_INFERENCE,
+)
 from hand_canvas.geometry import Point
 
 # MediaPipe hand landmark indices
@@ -105,26 +111,78 @@ class HandTracker:
         model_path: Path | None = None,
         smooth_alpha: float = SMOOTH_ALPHA,
         num_hands: int = 2,
+        use_gpu: bool = USE_GPU_INFERENCE,
     ) -> None:
         path = ensure_model(model_path or DEFAULT_MODEL_PATH)
+        self._smoothers: dict[str, Smoother] = {}
+        self._smooth_alpha = smooth_alpha
+        self._start_ns = time.perf_counter_ns()
+        self._last_timestamp_ms = -1
+
+        delegates = [mp_python.BaseOptions.Delegate.CPU]
+        if use_gpu:
+            delegates.insert(0, mp_python.BaseOptions.Delegate.GPU)
+
+        self._landmarker = None
+        self.delegate = "none"
+        for delegate in delegates:
+            try:
+                self._landmarker = self._build(path, num_hands, delegate)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Hand tracking on {delegate.name} unavailable: {exc}")
+                continue
+            self.delegate = delegate.name
+            print(f"Hand tracking on {self.delegate}")
+            break
+
+        if self._landmarker is None:
+            raise RuntimeError("Could not initialize the hand landmarker")
+
+    def _build(self, path: Path, num_hands: int, delegate) -> mp_vision.HandLandmarker:
         options = mp_vision.HandLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(path)),
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(path), delegate=delegate
+            ),
             running_mode=mp_vision.RunningMode.VIDEO,
             num_hands=num_hands,
             min_hand_detection_confidence=0.5,
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5,
         )
-        self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
-        self._smoothers: dict[str, Smoother] = {}
-        self._smooth_alpha = smooth_alpha
-        self._timestamp_ms = 0
+        landmarker = mp_vision.HandLandmarker.create_from_options(options)
+        try:
+            # Run once here so a broken delegate raises now rather than mid-loop,
+            # and so the first real frame does not pay for lazy initialization.
+            blank = np.zeros((64, 64, 3), dtype=np.uint8)
+            landmarker.detect_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=blank),
+                self._next_timestamp_ms(),
+            )
+        except Exception:
+            landmarker.close()
+            raise
+        return landmarker
+
+    def _next_timestamp_ms(self) -> int:
+        """VIDEO mode needs real, strictly increasing timestamps to track well."""
+        elapsed = (time.perf_counter_ns() - self._start_ns) // 1_000_000
+        timestamp = max(elapsed, self._last_timestamp_ms + 1)
+        self._last_timestamp_ms = timestamp
+        return timestamp
 
     def process(self, frame: Frame) -> list[Hand]:
-        rgb = np.ascontiguousarray(frame.image[:, :, ::-1])
+        image = frame.image
+        if TRACKING_MAX_WIDTH and image.shape[1] > TRACKING_MAX_WIDTH:
+            scale = TRACKING_MAX_WIDTH / image.shape[1]
+            image = cv2.resize(
+                image,
+                (TRACKING_MAX_WIDTH, max(1, round(image.shape[0] * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        # cvtColor is ~100x faster than numpy's [:, :, ::-1] + ascontiguousarray.
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect_for_video(mp_image, self._timestamp_ms)
-        self._timestamp_ms += 33  # ~30 FPS pacing for VIDEO mode
+        result = self._landmarker.detect_for_video(mp_image, self._next_timestamp_ms())
 
         if not result.hand_landmarks:
             for smoother in self._smoothers.values():

@@ -1,6 +1,8 @@
 """GPU canvas compositor via OpenGL (moderngl).
 
-Uploads the camera frame as a texture and draws shapes as GPU quads.
+Owns the visible window: the camera frame is uploaded as a texture and shapes
+are drawn as GPU quads straight into the default framebuffer. Nothing is read
+back to the CPU, which is what a ``cv2.imshow`` display path would have forced.
 Falls back is handled by the caller if context creation fails.
 """
 
@@ -8,9 +10,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import cv2
 import numpy as np
 
-from hand_canvas.geometry import PointShape, Rectangle, rectangle_corners
+from hand_canvas.geometry import (
+    PointShape,
+    Rectangle,
+    is_visible_figure,
+    rectangle_corners,
+)
 
 if TYPE_CHECKING:
     from hand_canvas.canvas import Canvas
@@ -88,26 +96,32 @@ def _quad_ndc(
 
 
 class GpuCanvasRenderer:
-    """Composites camera background + shapes on the GPU."""
+    """Composites camera background + shapes on the GPU and owns the window."""
 
-    def __init__(self, width: int, height: int) -> None:
+    def __init__(self, width: int, height: int, title: str = "Hand Geometry Canvas") -> None:
         import glfw
         import moderngl
 
         if not glfw.init():
             raise RuntimeError("glfw.init() failed")
 
-        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
         glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
         glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
         glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-        window = glfw.create_window(max(width, 64), max(height, 64), "gpu", None, None)
+        window = glfw.create_window(max(width, 64), max(height, 64), title, None, None)
         if window is None:
             glfw.terminate()
-            raise RuntimeError("Could not create hidden OpenGL window")
+            raise RuntimeError("Could not create OpenGL window")
         glfw.make_context_current(window)
+        # No vsync: capping to the monitor refresh would turn a 55fps pipeline
+        # into a 30fps one every time a frame misses its slot.
+        glfw.swap_interval(0)
+
+        self._pressed: list[int] = []
+        glfw.set_key_callback(window, self._on_key)
 
         self._glfw = glfw
+        self._moderngl = moderngl
         self._window = window
         self._ctx = moderngl.create_context()
         self._width = width
@@ -140,50 +154,81 @@ class GpuCanvasRenderer:
             self._color_prog, [(self._color_vbo, "2f 4f", "in_pos", "in_color")]
         )
 
-        self._fbo = self._ctx.framebuffer(
-            color_attachments=[self._ctx.texture((width, height), 3)]
-        )
         self._frame_tex = self._ctx.texture((width, height), 3)
         self._frame_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        self._overlay_tex = None
+        self._overlay_version: int | None = None
 
     @classmethod
-    def try_create(cls, width: int, height: int) -> GpuCanvasRenderer | None:
+    def try_create(
+        cls, width: int, height: int, title: str = "Hand Geometry Canvas"
+    ) -> GpuCanvasRenderer | None:
         try:
-            renderer = cls(width, height)
+            renderer = cls(width, height, title)
             print(f"Canvas GPU renderer ready (OpenGL {renderer._ctx.version_code})")
             return renderer
         except Exception as exc:  # noqa: BLE001
             print(f"Canvas GPU unavailable, using CPU: {exc}")
             return None
 
-    def resize(self, width: int, height: int) -> None:
+    def _on_key(self, window, key: int, scancode: int, action: int, mods: int) -> None:
+        if action == self._glfw.PRESS:
+            self._pressed.append(key)
+
+    @property
+    def should_close(self) -> bool:
+        return bool(self._glfw.window_should_close(self._window))
+
+    def poll_keys(self) -> list[str]:
+        """Printable keys pressed since the last call, lowercased."""
+        self._glfw.poll_events()
+        keys = [chr(k).lower() for k in self._pressed if 32 <= k <= 126]
+        self._pressed.clear()
+        return keys
+
+    def set_title(self, title: str) -> None:
+        self._glfw.set_window_title(self._window, title)
+
+    def _ensure_frame_tex(self, width: int, height: int) -> None:
         if width == self._width and height == self._height:
             return
         self._width = width
         self._height = height
-        self._fbo.release()
         self._frame_tex.release()
-        self._fbo = self._ctx.framebuffer(
-            color_attachments=[self._ctx.texture((width, height), 3)]
-        )
         self._frame_tex = self._ctx.texture((width, height), 3)
+        self._frame_tex.filter = (self._moderngl.LINEAR, self._moderngl.LINEAR)
 
-    def render(
+    def _ensure_overlay_tex(self, width: int, height: int):
+        tex = self._overlay_tex
+        if tex is not None and tex.size == (width, height):
+            return tex
+        if tex is not None:
+            tex.release()
+        tex = self._ctx.texture((width, height), 4)
+        tex.filter = (self._moderngl.LINEAR, self._moderngl.LINEAR)
+        self._overlay_tex = tex
+        self._overlay_version = None
+        return tex
+
+    def present(
         self,
         canvas: Canvas,
         background: np.ndarray,
         selected_ids: set[str] | None = None,
-    ) -> np.ndarray:
+        overlay: np.ndarray | None = None,
+        overlay_version: int = 0,
+    ) -> None:
+        """Draw one frame into the window. Nothing comes back to the CPU."""
         selected_ids = selected_ids or set()
         h, w = background.shape[:2]
-        self.resize(w, h)
+        self._ensure_frame_tex(w, h)
 
-        # BGR uint8 → RGB for GL texture
-        rgb = np.ascontiguousarray(background[:, :, ::-1])
-        self._frame_tex.write(rgb.tobytes())
+        rgb = cv2.cvtColor(background, cv2.COLOR_BGR2RGB)
+        self._frame_tex.write(rgb)
 
-        self._fbo.use()
-        self._ctx.viewport = (0, 0, w, h)
+        fb_w, fb_h = self._glfw.get_framebuffer_size(self._window)
+        self._ctx.screen.use()
+        self._ctx.viewport = (0, 0, max(fb_w, 1), max(fb_h, 1))
         self._ctx.clear(0.0, 0.0, 0.0)
         self._ctx.disable(self._ctx.BLEND)
 
@@ -199,6 +244,11 @@ class GpuCanvasRenderer:
         handle_y = 6.0 / h
 
         for shape in sorted(canvas.shapes, key=lambda s: s.z):
+            # Only real figures get painted; a point or sliver is a live preview
+            # of a gesture in progress, so it shows only while a hand holds it.
+            if not is_visible_figure(shape) and shape.id not in selected_ids:
+                continue
+
             if isinstance(shape, PointShape):
                 cx, cy = shape.position.x, shape.position.y
                 r = 8.0 / w
@@ -248,18 +298,25 @@ class GpuCanvasRenderer:
 
         if verts:
             data = np.asarray(verts, dtype="f4")
-            nbytes = data.nbytes
-            if nbytes > self._color_vbo.size:
-                self._color_vbo.orphan(nbytes)
-            self._color_vbo.write(data.tobytes())
+            if data.nbytes > self._color_vbo.size:
+                self._color_vbo.orphan(data.nbytes)
+            self._color_vbo.write(data)
             self._color_vao.render(vertices=len(data) // 6)
 
-        # Read back BGR for OpenCV display / debug overlay
-        raw = self._fbo.read(components=3, alignment=1)
-        rgb_out = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-        # OpenGL origin is bottom-left
-        rgb_out = np.flipud(rgb_out)
-        return np.ascontiguousarray(rgb_out[:, :, ::-1])
+        if overlay is not None:
+            oh, ow = overlay.shape[:2]
+            tex = self._ensure_overlay_tex(ow, oh)
+            if overlay_version != self._overlay_version:
+                tex.write(cv2.cvtColor(overlay, cv2.COLOR_BGRA2RGBA))
+                self._overlay_version = overlay_version
+            # cv2 antialiases into a transparent layer, which yields premultiplied
+            # alpha, so the source factor is ONE rather than SRC_ALPHA.
+            self._ctx.blend_func = self._ctx.ONE, self._ctx.ONE_MINUS_SRC_ALPHA
+            tex.use(0)
+            self._tex_prog["u_tex"] = 0
+            self._fs_vao.render()
+
+        self._glfw.swap_buffers(self._window)
 
     def close(self) -> None:
         try:
@@ -268,7 +325,8 @@ class GpuCanvasRenderer:
             self._fs_vbo.release()
             self._color_vbo.release()
             self._frame_tex.release()
-            self._fbo.release()
+            if self._overlay_tex is not None:
+                self._overlay_tex.release()
             self._tex_prog.release()
             self._color_prog.release()
         except Exception:  # noqa: BLE001

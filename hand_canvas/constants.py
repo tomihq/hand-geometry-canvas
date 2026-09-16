@@ -50,6 +50,16 @@ TRASH_ZONE_Y = 0.76
 TRASH_ZONE_W = 0.17
 TRASH_ZONE_H = 0.24
 
+# The bin reaches out for a held figure: from this far away it starts pulling it
+# in, shrinking it down to TRASH_PULL_MIN_SCALE of its size at the mouth. Reads
+# as suction, and warns before anything is deleted.
+TRASH_PULL_RADIUS = 0.22
+TRASH_PULL_MIN_SCALE = 0.3
+
+# Close enough to be swallowed on the spot, no need to open the hand. Slightly
+# outside the zone, so the hand never has to reach the very corner of the frame.
+TRASH_SWALLOW_DISTANCE = 0.03
+
 # Max distance (normalized) to select an existing point / corner handle.
 HIT_RADIUS = 0.035
 CORNER_HIT_RADIUS = 0.07
@@ -63,13 +73,45 @@ HELPER_HIT_PADDING = 0.04
 # EMA smoothing: smoothed = alpha * current + (1 - alpha) * previous
 SMOOTH_ALPHA = 0.4
 
-# Minimum drag distance before converting a point into a rectangle.
-MIN_RECT_SIZE = 0.01
+# Smallest figure allowed on the canvas, required on *both* width and height.
+# Anything under this is a sliver or a stray dot rather than a figure, so it is
+# never committed: it stays a preview while the gesture runs and is dropped on
+# release. Also the floor for resizing, so a figure cannot be squashed to noise.
+MIN_SHAPE_SIZE = 0.04
 
-# Display window (OpenCV)
+# Display window
 WINDOW_NAME = "Hand Geometry Canvas"
-WINDOW_WIDTH = 1024
-WINDOW_HEIGHT = 768
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720
 
 # Hand skeleton, gesture text and drag markers. Toggle at runtime with 'd'.
 SHOW_DEBUG_OVERLAY = False
+
+# --- Capture -----------------------------------------------------------------
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 60
+
+# MJPG is the only format most USB webcams can sustain at 720p/60+; the default
+# uncompressed YUYV runs out of USB bandwidth first and silently drops to ~10fps.
+CAMERA_FOURCC = "MJPG"
+
+# Ask the driver to keep a single frame queued. A deeper queue would hand us
+# stale frames whenever the pipeline is slower than the camera, which reads as
+# input lag even though the FPS counter looks fine.
+CAMERA_BUFFER_SIZE = 1
+
+# --- Tracking cost -----------------------------------------------------------
+# Inference is by far the most expensive stage. TFLite's GPU delegate runs it on
+# the discrete GPU instead of XNNPACK on the CPU; we fall back automatically if
+# the machine cannot create a GL context for it.
+USE_GPU_INFERENCE = True
+
+# The landmark model rescales to a fixed input, so inference time is nearly flat
+# above this width while the surrounding per-pixel work is not. Landmarks come
+# back normalized, so shrinking first costs nothing in coordinate math.
+TRACKING_MAX_WIDTH = 640
+
+# Print a rolling FPS figure in the window title.
+SHOW_FPS = True

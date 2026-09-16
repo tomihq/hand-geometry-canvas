@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
+from hand_canvas.constants import MIN_SHAPE_SIZE
+
 
 @dataclass(frozen=True)
 class Point:
@@ -69,6 +71,17 @@ def shape_area(shape: Shape) -> float:
     if isinstance(shape, PointShape):
         return 0.0
     return max(shape.width, 0.0) * max(shape.height, 0.0)
+
+
+def is_visible_figure(shape: Shape) -> bool:
+    """A finished figure: big enough on both axes to read as a shape on screen.
+
+    Bare points and slivers fail this — they are previews mid-gesture, not
+    something the canvas should keep or paint once the hand lets go.
+    """
+    if isinstance(shape, PointShape):
+        return False
+    return shape.width >= MIN_SHAPE_SIZE and shape.height >= MIN_SHAPE_SIZE
 
 
 def rectangle_from_points(

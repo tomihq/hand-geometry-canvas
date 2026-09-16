@@ -14,6 +14,7 @@ from hand_canvas.geometry import (
     Rectangle,
     Shape,
     distance,
+    is_visible_figure,
     point_in_rectangle,
     rectangle_corners,
     shape_area,
@@ -137,6 +138,11 @@ class Canvas:
         ordered = sorted(self._shapes, key=lambda s: s.z)
 
         for shape in ordered:
+            # Only real figures get painted; a point or sliver is a live preview
+            # of a gesture in progress, so it shows only while a hand holds it.
+            if not is_visible_figure(shape) and shape.id not in selected_ids:
+                continue
+
             if isinstance(shape, PointShape):
                 cx = int(shape.position.x * width)
                 cy = int(shape.position.y * height)

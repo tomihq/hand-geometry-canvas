@@ -11,6 +11,7 @@ empty-space target. Newly created points stay selected (STRETCHING) by default.
 Gestures:
   - Pinch → create point / stretch / resize
   - Closed fist on a figure → select + move; open hand → release
+  - Carrying a figure into the trash zone → shrinks on approach, then deleted
 
 Lock model (two hands on one figure):
   - First hand to grab a figure becomes the owner (lock): can move.
@@ -22,6 +23,7 @@ Lock model (two hands on one figure):
 
 from __future__ import annotations
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,7 +34,10 @@ from hand_canvas.constants import (
     GRAB_HIT_PADDING,
     HELPER_HIT_PADDING,
     HIT_RADIUS,
-    MIN_RECT_SIZE,
+    MIN_SHAPE_SIZE,
+    TRASH_PULL_MIN_SCALE,
+    TRASH_PULL_RADIUS,
+    TRASH_SWALLOW_DISTANCE,
     TRASH_ZONE_H,
     TRASH_ZONE_W,
     TRASH_ZONE_X,
@@ -54,6 +59,7 @@ from hand_canvas.geometry import (
     PointShape,
     Rectangle,
     Shape,
+    is_visible_figure,
     nearest_corner,
     nearest_corner_excluding,
     point_in_rectangle,
@@ -83,6 +89,26 @@ def _shape_center(shape: Shape) -> Point:
     return shape.position
 
 
+def _distance_to_trash(position: Point) -> float:
+    """Gap between a point and the trash zone; 0 once it is inside."""
+    zone = trash_zone()
+    dx = max(zone.x - position.x, 0.0, position.x - (zone.x + zone.width))
+    dy = max(zone.y - position.y, 0.0, position.y - (zone.y + zone.height))
+    return math.hypot(dx, dy)
+
+
+def _scaled_about_center(shape: Rectangle, width: float, height: float) -> Rectangle:
+    center = _shape_center(shape)
+    return Rectangle(
+        x=center.x - width * 0.5,
+        y=center.y - height * 0.5,
+        width=width,
+        height=height,
+        id=shape.id,
+        z=shape.z,
+    )
+
+
 class InteractionState(Enum):
     IDLE = "IDLE"
     STRETCHING = "STRETCHING"
@@ -101,6 +127,13 @@ class PointerSession:
     active_corner: Corner | None = None
     shape_size: tuple[float, float] | None = None
     is_owner: bool = False
+    # True size of the figure before the trash started shrinking it, so pulling
+    # away restores it exactly and undo brings back the figure, not the husk.
+    full_size: tuple[float, float] | None = None
+    # A grab that starts within the bin's reach cannot delete on the spot: the
+    # figure has to be carried out and brought back, so nothing vanishes the
+    # instant you pick it up off the corner.
+    trash_armed: bool = True
 
 
 @dataclass
@@ -209,6 +242,15 @@ class InteractionEngine:
         grab_ups = [e for e in events if isinstance(e, GrabUp)]
         sweeps = [e for e in events if isinstance(e, SweepClear)]
 
+        # A hand can let go and start a new gesture in the same frame: opening
+        # a fist passes through a pinch pose on the way out. That pointer's
+        # release has to land first, or the new gesture latches onto the very
+        # session the release was meant to end.
+        restarting = {e.pointer_id for e in downs} | {e.pointer_id for e in grab_downs}
+        for up in [e for e in grab_ups if e.pointer_id in restarting]:
+            self._on_grab_up(up.pointer_id, canvas)
+        grab_ups = [e for e in grab_ups if e.pointer_id not in restarting]
+
         if downs:
             self._handle_downs_parallel(downs, canvas)
         if grab_downs:
@@ -223,8 +265,9 @@ class InteractionEngine:
         ]
         if combined_moves:
             self._handle_moves_composed(combined_moves, canvas)
+        self._swallow_into_trash(canvas)
         for up in ups:
-            self._on_pointer_up(up.pointer_id)
+            self._on_pointer_up(up.pointer_id, canvas)
         for up in grab_ups:
             self._on_grab_up(up.pointer_id, canvas)
         if sweeps:
@@ -389,6 +432,8 @@ class InteractionEngine:
     ) -> None:
         """Pinch on shapes: stretch points or resize (no move)."""
         session = self._session(pointer_id)
+        # This hand is no longer carrying the figure towards the bin
+        self._restore_pulled(session, canvas)
 
         # Locked by the other hand → follow this hand (any pinch inside)
         if self._start_helper_follow(pointer_id, position, canvas):
@@ -452,6 +497,7 @@ class InteractionEngine:
         session.last_pointer = Point(position.x, position.y)
         session.shape_origin = Point(hit.x, hit.y)
         session.shape_size = (hit.width, hit.height)
+        session.trash_armed = _distance_to_trash(position) >= TRASH_PULL_RADIUS
         session.state = InteractionState.MOVING
 
     def _begin_resize(
@@ -517,7 +563,9 @@ class InteractionEngine:
             dx = abs(position.x - origin.x)
             dy = abs(position.y - origin.y)
             session.last_pointer = Point(position.x, position.y)
-            if dx < MIN_RECT_SIZE and dy < MIN_RECT_SIZE:
+            # Both sides must clear the floor: a drag along one axis alone would
+            # otherwise commit a zero-thickness sliver.
+            if dx < MIN_SHAPE_SIZE or dy < MIN_SHAPE_SIZE:
                 return (
                     PointShape(
                         position=Point(origin.x, origin.y),
@@ -551,7 +599,7 @@ class InteractionEngine:
 
             session.last_pointer = Point(position.x, position.y)
             resized = resize_rectangle_from_corner(shape, active, position)
-            if resized.width < MIN_RECT_SIZE or resized.height < MIN_RECT_SIZE:
+            if resized.width < MIN_SHAPE_SIZE or resized.height < MIN_SHAPE_SIZE:
                 return None
             if not session.is_owner:
                 resized = self._pin_owner_corner(resized, session.selected_id)
@@ -566,11 +614,51 @@ class InteractionEngine:
             dx = position.x - session.last_pointer.x
             dy = position.y - session.last_pointer.y
             session.last_pointer = Point(position.x, position.y)
-            if dx == 0.0 and dy == 0.0:
+            moved = translate_rectangle(shape, dx, dy)
+            pulled = self._trash_pull(moved, position, session)
+            if pulled is None and dx == 0.0 and dy == 0.0:
                 return None
-            return translate_rectangle(shape, dx, dy), session
+            return pulled or moved, session
 
         return None
+
+    def _trash_pull(
+        self, shape: Rectangle, hand: Point, session: PointerSession
+    ) -> Rectangle | None:
+        """Shrink a held figure as the hand carries it into the bin's reach."""
+        gap = _distance_to_trash(hand)
+
+        # Picked up from inside the bin: no suction until it has been carried
+        # out, otherwise it shrinks in your hand for a delete that cannot fire.
+        if not session.trash_armed and gap < TRASH_PULL_RADIUS:
+            return None
+
+        if gap >= TRASH_PULL_RADIUS:
+            session.trash_armed = True
+            if session.full_size is None:
+                return None
+            # Backed out of range: give the figure its size back.
+            width, height = session.full_size
+            session.full_size = None
+            return _scaled_about_center(shape, width, height)
+
+        if session.full_size is None:
+            session.full_size = (shape.width, shape.height)
+        width, height = session.full_size
+        scale = TRASH_PULL_MIN_SCALE + (1.0 - TRASH_PULL_MIN_SCALE) * (
+            gap / TRASH_PULL_RADIUS
+        )
+        return _scaled_about_center(shape, width * scale, height * scale)
+
+    def _restore_pulled(self, session: PointerSession, canvas: Canvas) -> None:
+        """Undo the shrink, so nothing is kept or deleted at preview size."""
+        if session.full_size is None or session.selected_id is None:
+            return
+        width, height = session.full_size
+        session.full_size = None
+        shape = canvas.get(session.selected_id)
+        if isinstance(shape, Rectangle):
+            canvas.update(_scaled_about_center(shape, width, height))
 
     def _handle_moves_composed(
         self, moves: list[PointerMove], canvas: Canvas
@@ -606,42 +694,120 @@ class InteractionEngine:
         apply_batch(moving)
         apply_batch(resizing)
 
-    def _on_pointer_up(self, pointer_id: str) -> None:
+    def _on_pointer_up(self, pointer_id: str, canvas: Canvas) -> None:
         session = self._sessions.get(pointer_id)
         # Fist owns MOVING; pinch-up must not release a closed-hand grab
         if session is not None and session.state == InteractionState.MOVING:
             return
+        if session is not None:
+            self._restore_pulled(session, canvas)
+        self._drop_unfinished(session, canvas)
         self._clear_session(pointer_id)
 
     def _on_grab_up(self, pointer_id: str, canvas: Canvas) -> None:
-        """Opening the hand over the trash zone deletes what it was holding."""
+        """Opening the hand over the bin deletes; anywhere else just lets go."""
         session = self._sessions.get(pointer_id)
+        if session is not None:
+            # Letting go while the bin is visibly sucking the figure in reads
+            # as dropping it there, so it counts even short of the mouth.
+            being_pulled = session.full_size is not None and session.trash_armed
+            # Whatever happens next, the figure goes back to its real size: it
+            # is either deleted whole or dropped whole, never as a husk.
+            self._restore_pulled(session, canvas)
         if (
             session is not None
             and session.state == InteractionState.MOVING
             and session.selected_id is not None
         ):
             shape = canvas.get(session.selected_id)
-            if shape is not None and self._over_trash(shape):
+            if shape is not None and (being_pulled or self._in_trash(session, shape)):
                 canvas.discard([shape.id])
+                self._release_sessions_holding(shape.id)
+                return
+        self._drop_unfinished(session, canvas)
         self._clear_session(pointer_id)
 
-    def _over_trash(self, shape: Shape) -> bool:
+    def _swallow_into_trash(self, canvas: Canvas) -> None:
+        """Carrying a figure into the bin deletes it there and then.
+
+        Waiting for the hand to open was too fragile: opening the fist passes
+        through poses that hand the pointer over to another gesture, and the
+        release arrived with the session no longer holding anything.
+        """
+        for pointer_id in list(self._sessions):
+            session = self._sessions[pointer_id]
+            if session.state != InteractionState.MOVING or session.selected_id is None:
+                continue
+            shape = canvas.get(session.selected_id)
+            if shape is None or not self._in_trash(session, shape):
+                continue
+            shape_id = shape.id
+            self._restore_pulled(session, canvas)
+            canvas.discard([shape_id])
+            self._release_sessions_holding(shape_id)
+
+    def _release_sessions_holding(self, shape_id: str) -> None:
+        for pointer_id, session in list(self._sessions.items()):
+            if session.selected_id == shape_id:
+                self._clear_session(pointer_id)
+
+    def _drop_unfinished(self, session: PointerSession | None, canvas: Canvas) -> None:
+        """Release with nothing worth keeping: remove the preview, don't commit.
+
+        A pinch that never got dragged leaves a bare point, and a drag along a
+        single axis leaves a sliver. Both read as stray specks on the canvas.
+        """
+        if session is None or session.selected_id is None:
+            return
+        shape = canvas.get(session.selected_id)
+        if shape is None or is_visible_figure(shape):
+            return
+        if self._other_session_holds(session.selected_id, session):
+            return
+        canvas.remove(shape.id)
+
+    def _other_session_holds(self, shape_id: str, owner: PointerSession) -> bool:
+        return any(
+            session is not owner and session.selected_id == shape_id
+            for session in self._sessions.values()
+        )
+
+    def _in_trash(self, session: PointerSession, shape: Shape) -> bool:
+        """The hand reached the bin, or the figure itself is sitting in it.
+
+        Testing the hand matters: a figure can be far wider than the zone, so
+        its center may never make it in no matter where you drag from.
+        """
+        if not session.trash_armed:
+            return False
+        hand = session.last_pointer
+        if hand is not None and _distance_to_trash(hand) <= TRASH_SWALLOW_DISTANCE:
+            return True
         return point_in_rectangle(_shape_center(shape), trash_zone(), padding=0.0)
 
     def pending_delete_ids(self, canvas: Canvas) -> set[str]:
-        """Held figures currently sitting in the trash zone (for highlighting)."""
+        """Held figures already within the bin's reach (for highlighting)."""
         armed: set[str] = set()
         for session in self._sessions.values():
             if session.state != InteractionState.MOVING or session.selected_id is None:
                 continue
             shape = canvas.get(session.selected_id)
-            if shape is not None and self._over_trash(shape):
+            if shape is None:
+                continue
+            hand = session.last_pointer
+            near = (
+                session.trash_armed
+                and hand is not None
+                and _distance_to_trash(hand) < TRASH_PULL_RADIUS
+            )
+            if near or self._in_trash(session, shape):
                 armed.add(shape.id)
         return armed
 
     def _clear_canvas(self, canvas: Canvas) -> None:
         """Wipe every figure as one undoable batch and drop all sessions."""
+        for session in self._sessions.values():
+            self._restore_pulled(session, canvas)
         ids = [shape.id for shape in canvas.shapes]
         if not ids:
             return
