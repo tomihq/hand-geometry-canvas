@@ -319,9 +319,9 @@ def run() -> int:
         fps = FpsMeter()
         print(
             "Hand Geometry Canvas running (2 hands).\n"
-            "  Delete: grab a figure with a fist and carry it to the trash zone "
-            "(bottom-right). It settles into your hand as you approach; open "
-            "your hand inside the zone to drop it in.\n"
+            "  Delete: grab a figure with a fist and take it to the trash zone "
+            "(bottom-right). It settles into your hand as you approach, and "
+            "anything inside the zone is deleted.\n"
             "  Clear all: swipe an open palm sideways across the frame.\n"
             "  Keys: 'z' undo delete, 'd' debug overlay, 'q' quit."
         )

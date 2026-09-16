@@ -11,8 +11,8 @@ empty-space target. Newly created points stay selected (STRETCHING) by default.
 Gestures:
   - Pinch → create point / stretch / resize
   - Closed fist on a figure → select + move; open hand → release
-  - Near the trash zone a held figure rides on the hand; open your hand with
-    it inside the zone to delete it
+  - Near the trash zone a held figure rides on the hand, sized to fit; the
+    zone deletes anything inside it, dropped there or carried in
 
 Lock model (two hands on one figure):
   - First hand to grab a figure becomes the owner (lock): can move.
@@ -36,6 +36,7 @@ from hand_canvas.constants import (
     HELPER_HIT_PADDING,
     HIT_RADIUS,
     MIN_SHAPE_SIZE,
+    TRASH_EVICT_GAP,
     TRASH_FIT_MARGIN,
     TRASH_PULL_MIN_SCALE,
     TRASH_PULL_RADIUS,
@@ -107,6 +108,17 @@ def _rect_at(center: Point, width: float, height: float, like: Rectangle) -> Rec
         id=like.id,
         z=like.z,
     )
+
+
+def _evicted(shape: Rectangle) -> Rectangle:
+    """Park a binned figure beside the zone, so undo cannot feed it back in."""
+    zone = trash_zone()
+    center = _shape_center(shape)
+    if not point_in_rectangle(center, zone, padding=0.0):
+        return shape
+    half = shape.width * 0.5
+    x = max(zone.x - half - TRASH_EVICT_GAP, half)
+    return _rect_at(Point(x, center.y), shape.width, shape.height, shape)
 
 
 def _fit_in_trash_scale(width: float, height: float) -> float:
@@ -279,6 +291,7 @@ class InteractionEngine:
             self._on_grab_up(up.pointer_id, canvas)
         if sweeps:
             self._clear_canvas(canvas)
+        self._empty_trash_zone(canvas)
 
     def _selected_rect_under(
         self, position: Point, pointer_id: str, canvas: Canvas
@@ -748,13 +761,46 @@ class InteractionEngine:
         self._restore_pulled(session, canvas)
 
         if binned and session.selected_id is not None:
-            shape_id = session.selected_id
-            canvas.discard([shape_id])
-            self._release_sessions_holding(shape_id)
+            self._bin(session.selected_id, canvas)
             return
 
         self._drop_unfinished(session, canvas)
         self._clear_session(pointer_id)
+
+    def _empty_trash_zone(self, canvas: Canvas) -> None:
+        """The bin eats whatever is inside it, held or not.
+
+        Opening a hand is not always read cleanly, and a drop that misfires
+        used to leave the figure sitting in the bin untouched. So the release
+        is not the only way in: being inside the zone is enough, which also
+        means a figure riding on a hand that reaches in goes with it.
+        """
+        drawing = {
+            session.selected_id
+            for session in self._sessions.values()
+            if session.state == InteractionState.STRETCHING
+        }
+        zone = trash_zone()
+        doomed = [
+            shape.id
+            for shape in canvas.shapes
+            if isinstance(shape, Rectangle)
+            and shape.id not in drawing
+            and point_in_rectangle(_shape_center(shape), zone, padding=0.0)
+        ]
+        for shape_id in doomed:
+            self._bin(shape_id, canvas)
+
+    def _bin(self, shape_id: str, canvas: Canvas) -> None:
+        """Delete a figure as the bin should: whole, and undoable to beside it."""
+        for session in self._sessions.values():
+            if session.selected_id == shape_id:
+                self._restore_pulled(session, canvas)
+        shape = canvas.get(shape_id)
+        if isinstance(shape, Rectangle):
+            canvas.update(_evicted(shape))
+        canvas.discard([shape_id])
+        self._release_sessions_holding(shape_id)
 
     def _release_sessions_holding(self, shape_id: str) -> None:
         for pointer_id, session in list(self._sessions.items()):
@@ -795,13 +841,19 @@ class InteractionEngine:
         return hand is not None and point_in_rectangle(hand, zone, padding=0.0)
 
     def pending_delete_ids(self, canvas: Canvas) -> set[str]:
-        """Held figures that opening your hand right now would delete."""
+        """Held figures on their way into the bin, for the warning highlight.
+
+        Reaching the zone deletes on the spot, so arming has to happen during
+        the approach — by the time a figure is inside, it is already gone.
+        """
         armed: set[str] = set()
         for session in self._sessions.values():
             if session.state != InteractionState.MOVING or session.selected_id is None:
                 continue
             shape = canvas.get(session.selected_id)
-            if shape is not None and self._in_trash(session, shape):
+            if shape is None:
+                continue
+            if session.full_size is not None or self._in_trash(session, shape):
                 armed.add(shape.id)
         return armed
 

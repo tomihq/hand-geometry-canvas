@@ -58,6 +58,10 @@ TRASH_PULL_RADIUS = 0.22
 TRASH_FIT_MARGIN = 0.7
 TRASH_PULL_MIN_SCALE = 0.25
 
+# Undo takes a binned figure out of the zone and parks it this far to its left,
+# otherwise the bin would eat it again the moment it came back.
+TRASH_EVICT_GAP = 0.02
+
 # Max distance (normalized) to select an existing point / corner handle.
 HIT_RADIUS = 0.035
 CORNER_HIT_RADIUS = 0.07
