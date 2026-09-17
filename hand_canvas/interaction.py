@@ -422,33 +422,52 @@ class InteractionEngine:
         self, grabs: list[GrabDown], canvas: Canvas
     ) -> None:
         plans = [
-            _DownPlan(
-                pointer_id=event.pointer_id,
-                position=event.position,
-                hit=self._resolve_grab_target(
-                    event.position, canvas, event.pointer_id
+            (
+                _DownPlan(
+                    pointer_id=event.pointer_id,
+                    position=event.position,
+                    hit=self._resolve_grab_target(
+                        event.position, canvas, event.pointer_id
+                    ),
                 ),
+                event.fingers_together,
             )
             for event in grabs
         ]
-        for plan in plans:
-            self._apply_fist_grab(plan.pointer_id, plan.position, plan.hit, canvas)
+        for plan, fingers_together in plans:
+            self._apply_fist_grab(
+                plan.pointer_id, plan.position, plan.hit, canvas, fingers_together
+            )
 
     def _acquire_from_grab_moves(
         self, moves: list[GrabMove], canvas: Canvas
     ) -> None:
-        """Start move/resize from an ongoing fist when not already interacting."""
+        """Start move/resize/draw from an ongoing fist when not already busy."""
         for move in moves:
             session = self._sessions.get(move.pointer_id)
-            if session is not None and session.state in (
-                InteractionState.MOVING,
-                InteractionState.RESIZING,
-            ):
+            # Anything but idle is already an interaction this hand owns. A
+            # drawing session in particular must not be re-acquired: it would
+            # lay down a fresh figure on every frame the fist is held.
+            if session is not None and session.state != InteractionState.IDLE:
                 continue
             hit = self._resolve_grab_target(
                 move.position, canvas, move.pointer_id
             )
-            self._apply_fist_grab(move.pointer_id, move.position, hit, canvas)
+            self._apply_fist_grab(
+                move.pointer_id, move.position, hit, canvas, move.fingers_together
+            )
+
+    def _begin_draw(self, pointer_id: str, position: Point, canvas: Canvas) -> None:
+        """Start a figure at ``position``, as a pinch on empty space would.
+
+        Nothing is committed yet: what sits on the canvas is a preview, and it
+        survives the release only if the hand moved far enough to make a figure
+        out of it. So a hand that closes over the canvas and stays put draws
+        nothing, which is what keeps this from firing on every stray fist.
+        """
+        point = PointShape(position=Point(position.x, position.y))
+        canvas.add(point)
+        self._select_new_point(pointer_id, point, position)
 
     def _select_new_point(
         self, pointer_id: str, point: PointShape, position: Point
@@ -535,10 +554,19 @@ class InteractionEngine:
         position: Point,
         hit: Shape | None,
         canvas: Canvas,
+        fingers_together: bool = False,
     ) -> None:
         """Fist: own+move, or if another hand already holds it → follow/resize."""
         # Locked by the other hand and we started inside → follow movement
         if self._start_helper_follow(pointer_id, position, canvas):
+            return
+
+        # A pinch aimed at the camera is indistinguishable from a fist, so the
+        # hand alone cannot say which was meant — but a fist over empty space
+        # means nothing, while a pinch there means draw. Nothing under the hand
+        # and the tips pressed together is therefore read as the pinch.
+        if hit is None and fingers_together:
+            self._begin_draw(pointer_id, position, canvas)
             return
 
         if not isinstance(hit, Rectangle):

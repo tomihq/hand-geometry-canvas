@@ -41,8 +41,26 @@ FIST_TIPS_PALM_MAX = 0.45
 # over the palm, reading 0.32, right inside the fist's own band. So a pinch is
 # also accepted when the fingers that take no part in it are clearly out of the
 # palm, which is what a fist can never do: measured over the middle, ring and
-# pinky, a fist stays under 0.51 while any pinch is past 0.84.
+# pinky, a fist stays under 0.51 while a pinch made that way is past 0.84.
 PINCH_FREE_FINGERS_MIN = 0.70
+
+# Neither measure above can see a pinch made with the hand pointed at the
+# camera, and no threshold ever will: in projection that pose *is* a closed
+# fist. Measured over a recording of it, the contact point sits 0.31 from the
+# palm centre and so does a real fist's, and the three free fingers read 0.30
+# against a fist's 0.21 — the distributions sit on top of each other, and
+# MediaPipe's depth channel does not pull them apart either.
+#
+# So the pose stops being what decides. A fist only ever does anything over a
+# figure; over empty space it has nothing to grab. That is the way out: a hand
+# closed over empty space with the tips pressed this tightly together is taken
+# as a pinch and draws. The figure is only kept if the hand then moves far
+# enough to make one, so a fist resting over the canvas still does nothing.
+#
+# Well inside PINCH_RATIO_ON, because a relaxed fist sits at 0.30: at this
+# figure a deliberate squeeze is read three times out of five, a slack fist
+# only one in six — and that one costs nothing but a preview.
+PINCH_CONTACT_RATIO = 0.22
 
 # Fingertip-to-palm distance / hand size, per finger. Curled reads ~0.25,
 # extended reads well past 1.0.

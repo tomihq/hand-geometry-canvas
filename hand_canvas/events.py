@@ -31,16 +31,24 @@ class PointerUp:
 
 @dataclass(frozen=True)
 class GrabDown:
-    """Fist closed — start selecting / moving a figure."""
+    """Fist closed — start selecting / moving a figure.
+
+    ``fingers_together`` reports that the thumb and index tips are pressed
+    together, which in projection a closed fist and a pinch made towards the
+    camera share. The pose alone cannot say which was meant, so the flag is
+    passed on and whatever is under the hand settles it.
+    """
 
     position: Point
     pointer_id: str = "default"
+    fingers_together: bool = False
 
 
 @dataclass(frozen=True)
 class GrabMove:
     position: Point
     pointer_id: str = "default"
+    fingers_together: bool = False
 
 
 @dataclass(frozen=True)

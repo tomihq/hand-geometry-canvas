@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 import numpy as np
@@ -55,6 +55,7 @@ from hand_canvas.constants import (
     INDEX_EXTENDED_RATIO,
     MIN_HAND_SCALE,
     PINCH_BASELINE_FRAMES,
+    PINCH_CONTACT_RATIO,
     PINCH_FREE_FINGERS_MIN,
     PINCH_RATIO_OFF,
     PINCH_RATIO_ON,
@@ -153,8 +154,7 @@ def _metrics(hand: Hand) -> HandMetrics:
 
 
 def _tag(event: PointerEvent, pointer_id: str) -> PointerEvent:
-    cls = type(event)
-    return cls(position=event.position, pointer_id=pointer_id)
+    return replace(event, pointer_id=pointer_id)
 
 
 class GestureDetector:
@@ -327,6 +327,10 @@ class GestureDetector:
         # the tips touch, which puts the contact point back over the palm).
         free_fingers_out = float(m.curls[1:].min()) > PINCH_FREE_FINGERS_MIN
         tips_reaching_out = m.tips_palm > PINCH_TIPS_PALM_MIN or free_fingers_out
+        # Neither of those sees a pinch aimed at the camera, which projects onto
+        # a closed fist exactly. All that is left is the contact itself, which
+        # says the tips are together but not what the hand meant by it.
+        fingers_together = m.pinch < PINCH_CONTACT_RATIO
 
         # Closed hand: enough fingertips tucked onto the palm, index included
         closed_hand = (
@@ -357,22 +361,25 @@ class GestureDetector:
         if self._was_fisting:
             self._handover_frames = self._handover_frames + 1 if pinch_pose else 0
             self._open_frames = self._open_frames + 1 if hand_opened else 0
-            needed = self._release_frames_needed()
 
-            # Reaching out into a pinch hands control over to the pinch cursor
-            if self._handover_frames >= needed:
+            # Reaching out into a pinch hands control over to the pinch cursor.
+            # This one does not get the moving-hand patience below: blur makes a
+            # hand read open, never pinched, so there is nothing to wait out.
+            if self._handover_frames >= FIST_RELEASE_FRAMES:
                 events.append(GrabUp(position=palm))
                 self._was_fisting = False
                 events.extend(self._begin_pinch(pinch_pos))
                 return events
-            if self._open_frames >= needed:
+            if self._open_frames >= self._release_frames_needed():
                 events.append(GrabUp(position=palm))
                 self._was_fisting = False
                 self.state = (
                     GestureState.POINTING if index_extended else GestureState.IDLE
                 )
                 return events
-            events.append(GrabMove(position=palm))
+            events.append(
+                GrabMove(position=palm, fingers_together=fingers_together)
+            )
             self._last_cursor = palm
             self.state = GestureState.FIST
             return events
@@ -383,7 +390,7 @@ class GestureDetector:
             if closed_hand:
                 events.append(PointerUp(position=pinch_pos))
                 self._was_pinching = False
-                events.extend(self._begin_grab(palm))
+                events.extend(self._begin_grab(palm, fingers_together))
                 return events
             self._last_cursor = pinch_pos
             if pinch_released:
@@ -401,7 +408,7 @@ class GestureDetector:
         if closed_hand:
             self.state = GestureState.FIST
             if settled:
-                events.extend(self._begin_grab(palm))
+                events.extend(self._begin_grab(palm, fingers_together))
             return events
 
         if pinch_pose:
@@ -438,13 +445,18 @@ class GestureDetector:
             PointerMove(position=pinch_pos),
         ]
 
-    def _begin_grab(self, palm: Point) -> list[PointerEvent]:
+    def _begin_grab(
+        self, palm: Point, fingers_together: bool = False
+    ) -> list[PointerEvent]:
         self._was_fisting = True
         self._open_frames = 0
         self._handover_frames = 0
         self._last_cursor = palm
         self.state = GestureState.FIST
-        return [GrabDown(position=palm), GrabMove(position=palm)]
+        return [
+            GrabDown(position=palm, fingers_together=fingers_together),
+            GrabMove(position=palm, fingers_together=fingers_together),
+        ]
 
 
 class MultiHandGestureDetector:
