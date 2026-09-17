@@ -177,10 +177,13 @@ CAMERA_FPS = 60
 # uncompressed YUYV runs out of USB bandwidth first and silently drops to ~10fps.
 CAMERA_FOURCC = "MJPG"
 
-# Ask the driver to keep a single frame queued. A deeper queue would hand us
-# stale frames whenever the pipeline is slower than the camera, which reads as
-# input lag even though the FPS counter looks fine.
-CAMERA_BUFFER_SIZE = 1
+# Number of V4L2 buffers the driver maps. One is not enough: while userspace
+# holds the only buffer the driver has nowhere to put the next frame, so every
+# second one is dropped and a 30fps camera delivers 15. Two is the minimum that
+# keeps the stream full. Staleness is not a concern at any depth here — the
+# capture thread drains the queue continuously and `Camera.read` only ever
+# hands back the newest frame.
+CAMERA_BUFFER_SIZE = 2
 
 # --- Tracking cost -----------------------------------------------------------
 # Inference is by far the most expensive stage. TFLite's GPU delegate runs it on
