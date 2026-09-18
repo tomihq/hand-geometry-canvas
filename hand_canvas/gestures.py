@@ -23,15 +23,15 @@ Both gestures must be deliberate, so a relaxed or half-closed hand does nothing:
     away from the palm or the remaining fingers clearly out of it.
 
 Starting a gesture and ending one are not symmetric problems. Starting has to
-tell intent from a hand passing through the pose, so it takes a hold. Ending
-has to survive a hand in motion: a travelling arm smears the fingers in the
-camera and the hand can drop out of tracking entirely for a frame or two, so a
-release is only believed once consecutive frames agree on it.
+tell intent from a hand passing through the pose, so it takes a hold. Ending a
+grab is ratio-based: a clearly open hand (fingertips in an "extended" band,
+clear of the palm) releases immediately on the live reading. A travelling arm
+can still smear for a frame; that is absorbed by needing several fingers in
+the open band at once, not by waiting on a frame counter.
 """
 
 from __future__ import annotations
 
-import math
 import time
 from collections import deque
 from dataclasses import dataclass, replace
@@ -42,16 +42,14 @@ import numpy as np
 from hand_canvas.constants import (
     FIST_CURL_RATIO_OFF,
     FIST_CURL_RATIO_ON,
-    FIST_FINGERS_OFF,
     FIST_FINGERS_ON,
-    FIST_MOVING_SPEED,
+    FIST_OPEN_CURL_MIN,
+    FIST_OPEN_FINGERS_MIN,
+    FIST_OPEN_TIPS_PALM_MIN,
     FIST_RELEASE_FRAMES,
-    FIST_RELEASE_FRAMES_MOVING,
     FIST_TIPS_PALM_MAX,
     GESTURE_WINDOW_FRAMES,
     HAND_LOST_GRACE_FRAMES,
-    HAND_SPEED_SAMPLES,
-    HAND_SPEED_SPAN,
     INDEX_EXTENDED_RATIO,
     MIN_HAND_SCALE,
     PINCH_BASELINE_FRAMES,
@@ -167,16 +165,12 @@ class GestureDetector:
             maxlen=SWEEP_TRAVEL_FRAMES
         )
         self._pinch_baseline: deque[float] = deque(maxlen=PINCH_BASELINE_FRAMES)
-        self._speed_trail: deque[tuple[float, Point]] = deque(
-            maxlen=HAND_SPEED_SAMPLES
-        )
         self._sweep_cooldown = 0
         self.state = GestureState.IDLE
         self._was_pinching = False
         self._was_fisting = False
-        # Consecutive frames that read as letting go of a held fist, and frames
-        # with no hand at all. Both have to pile up before anything is released.
-        self._open_frames = 0
+        # Consecutive frames that read as a pinch while a fist is held, and
+        # frames with no hand at all. Open-hand release does not use a counter.
         self._handover_frames = 0
         self._lost_frames = 0
         self._last_cursor = Point(0.5, 0.5)
@@ -218,35 +212,19 @@ class GestureDetector:
             PINCH_RELEASE_MAX, max(PINCH_RATIO_OFF, held * PINCH_RELEASE_FACTOR)
         )
 
-    def _palm_speed(self) -> float:
-        """Palm travel in frame widths per second, over a short recent window.
+    @staticmethod
+    def _hand_clearly_open(m: HandMetrics) -> bool:
+        """True when fingertips sit in the open band, clear of the palm.
 
-        Deliberately measured across a span rather than between two adjacent
-        frames: a per-frame delta is mostly jitter at these distances.
+        Uses a range (several fingers past ``FIST_OPEN_CURL_MIN``, tips away
+        from the palm) rather than a single cutoff, so noise and hand-size
+        variation do not decide alone.
         """
-        if len(self._speed_trail) < 2:
-            return 0.0
-        now, latest = self._speed_trail[-1]
-        oldest_t, oldest_pos = self._speed_trail[0]
-        for stamp, position in reversed(self._speed_trail):
-            if now - stamp >= HAND_SPEED_SPAN:
-                oldest_t, oldest_pos = stamp, position
-                break
-        span = now - oldest_t
-        if span <= 0.0:
-            return 0.0
-        return math.hypot(latest.x - oldest_pos.x, latest.y - oldest_pos.y) / span
-
-    def _release_frames_needed(self) -> int:
-        """Frames of agreement before a held fist is allowed to let go.
-
-        A travelling arm smears the fingers in the camera: the curl ratios read
-        open for a frame or two and the figure used to be dropped mid-throw. So
-        the faster the hand is going, the longer a release has to insist.
-        """
-        if self._palm_speed() >= FIST_MOVING_SPEED:
-            return FIST_RELEASE_FRAMES_MOVING
-        return FIST_RELEASE_FRAMES
+        open_fingers = int(np.count_nonzero(m.curls >= FIST_OPEN_CURL_MIN))
+        return (
+            open_fingers >= FIST_OPEN_FINGERS_MIN
+            and m.tips_palm >= FIST_OPEN_TIPS_PALM_MIN
+        )
 
     def _swept(self) -> bool:
         """Open palm carried sideways across a good chunk of the frame."""
@@ -297,7 +275,6 @@ class GestureDetector:
             self._history.clear()
             self._palm_track.clear()
             self._pinch_baseline.clear()
-            self._speed_trail.clear()
             self.state = GestureState.IDLE
             self.last_pinch_ratio = 1.0
             self.last_release_ratio = PINCH_RATIO_OFF
@@ -305,7 +282,8 @@ class GestureDetector:
             return events
 
         self._lost_frames = 0
-        self._history.append(_metrics(hand))
+        live = _metrics(hand)
+        self._history.append(live)
         m = self._smoothed()
         # A gesture may only *start* once the window is full, which is the
         # hold that separates intent from a hand passing through the pose.
@@ -314,7 +292,6 @@ class GestureDetector:
         palm = m.palm
         pinch_pos = m.pinch_point
         self._last_palm = palm
-        self._speed_trail.append((now, palm))
         self.last_pinch_ratio = m.pinch
         self.last_fist_score = int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_ON))
 
@@ -339,7 +316,6 @@ class GestureDetector:
             and not index_extended
         )
         loose_curls = int(np.count_nonzero(m.curls <= FIST_CURL_RATIO_OFF))
-        hand_opened = loose_curls <= FIST_FINGERS_OFF
         # Sweep needs a flat open palm: every finger clearly away from the palm
         self._palm_track.append((palm, loose_curls == 0))
         if self._sweep_cooldown > 0:
@@ -360,22 +336,24 @@ class GestureDetector:
         # --- Holding a grab ---
         if self._was_fisting:
             self._handover_frames = self._handover_frames + 1 if pinch_pose else 0
-            self._open_frames = self._open_frames + 1 if hand_opened else 0
+
+            # Live (unsmoothed) open reading: the median window is for *starting*
+            # a gesture; holding it open for release made drops feel sticky.
+            if self._hand_clearly_open(live):
+                events.append(GrabUp(position=palm))
+                self._was_fisting = False
+                self.state = (
+                    GestureState.POINTING
+                    if live.index_extended > INDEX_EXTENDED_RATIO
+                    else GestureState.IDLE
+                )
+                return events
 
             # Reaching out into a pinch hands control over to the pinch cursor.
-            # This one does not get the moving-hand patience below: blur makes a
-            # hand read open, never pinched, so there is nothing to wait out.
             if self._handover_frames >= FIST_RELEASE_FRAMES:
                 events.append(GrabUp(position=palm))
                 self._was_fisting = False
                 events.extend(self._begin_pinch(pinch_pos))
-                return events
-            if self._open_frames >= self._release_frames_needed():
-                events.append(GrabUp(position=palm))
-                self._was_fisting = False
-                self.state = (
-                    GestureState.POINTING if index_extended else GestureState.IDLE
-                )
                 return events
             events.append(
                 GrabMove(position=palm, fingers_together=fingers_together)
@@ -449,7 +427,6 @@ class GestureDetector:
         self, palm: Point, fingers_together: bool = False
     ) -> list[PointerEvent]:
         self._was_fisting = True
-        self._open_frames = 0
         self._handover_frames = 0
         self._last_cursor = palm
         self.state = GestureState.FIST

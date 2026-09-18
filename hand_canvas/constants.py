@@ -23,7 +23,7 @@ PINCH_RATIO_OFF = 0.55
 # slightly while dragging read as a release and committed the figure half-drawn.
 # Scaling the exit off the held gap gives tight and loose pinches the same
 # margin, and PINCH_RATIO_OFF stays the floor so a tight pinch is unaffected.
-PINCH_RELEASE_FACTOR = 2.2
+PINCH_RELEASE_FACTOR = 1.4
 # Ceiling, so a pinch held very loosely can still be released by pulling apart.
 PINCH_RELEASE_MAX = 0.85
 # Frames of held pinch that define the reference gap.
@@ -67,31 +67,27 @@ PINCH_CONTACT_RATIO = 0.22
 FIST_CURL_RATIO_ON = 0.75
 FIST_CURL_RATIO_OFF = 1.05
 FIST_FINGERS_ON = 4
-FIST_FINGERS_OFF = 2
 
 # Index tip vs PIP distance from the wrist. Above this the finger is extended.
 INDEX_EXTENDED_RATIO = 1.08
 
-# --- Holding a grab ---------------------------------------------------------
+# --- Holding / releasing a grab ---------------------------------------------
 # Starting a fist takes a deliberate hold (GESTURE_WINDOW_FRAMES). Letting go
-# is the opposite problem. A travelling arm smears the fingers in the camera
-# for the whole length of the swing, not for one stray frame: the curl ratios
-# read open, and the figure used to be dropped in the middle of the throw. So
-# a release has to be confirmed over consecutive frames, and over more of them
-# while the hand is moving, which is when an open reading is least believable.
+# does not: once the hand is clearly open, the figure drops on that reading.
+# Openness is a band of ratios (not a single cutoff and not a frame counter),
+# so landmark noise and hand-size variation do not flap the decision, while a
+# half-open claw still carries and a full open releases immediately.
 #
-# These stack on top of the median window: the median needs three of its five
-# frames to turn before `hand_opened` is even true. A still hand therefore
-# releases after ~5 frames, a travelling one after ~8.
+# Fingertip–palm / hand size: tucked ~0.25, extended past ~1.0. Anything at or
+# above the floor counts toward "open"; needing several fingers in that band
+# plus the tips clear of the palm is what separates a claw from a release.
+FIST_OPEN_CURL_MIN = 0.90
+FIST_OPEN_FINGERS_MIN = 3
+FIST_OPEN_TIPS_PALM_MIN = 0.55
+
+# Pinch handover while holding a grab still needs a short agreement — blur can
+# look briefly pinched, and that path is not the "open hand → drop" case.
 FIST_RELEASE_FRAMES = 2
-FIST_RELEASE_FRAMES_MOVING = 5
-
-# Palm speed (frame widths per second) above which the hand counts as moving.
-FIST_MOVING_SPEED = 0.6
-
-# Window the palm speed is read over, and how many samples to keep for it.
-HAND_SPEED_SPAN = 0.08
-HAND_SPEED_SAMPLES = 12
 
 # Frames a held gesture survives with no hand detected at all. Tracking drops
 # out precisely when motion blur is worst, i.e. mid-throw.

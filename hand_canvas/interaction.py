@@ -732,10 +732,9 @@ class InteractionEngine:
     def _release_velocity(self, session: PointerSession) -> tuple[float, float]:
         """The fastest the hand was going shortly before it let go.
 
-        Not the speed at the instant of release: opening a fist is only
-        confirmed a few frames after the fingers start to move, and by then the
-        arm has begun to slow down, so the reading there is close to nothing.
-        Taking the peak of the recent window gives the speed of the swing and
+        Not only the speed at the instant of release: by the time the hand
+        opens the arm may already be slowing, so the reading there can be near
+        nothing. Taking the peak of the recent window gives the swing speed and
         ignores the tail where the arm was already stopping.
         """
         samples = [
