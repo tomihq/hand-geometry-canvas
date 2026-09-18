@@ -1,92 +1,125 @@
-"""Vector and quaternion math for 3D hand pose (wxyz quaternions)."""
+"""Thin math adapter: public Vector/Quaternion types ↔ numpy / scipy.
+
+Vector ops use numpy. Rotations use ``scipy.spatial.transform.Rotation``
+(scalar-last xyzw internally; our public Quaternion stays wxyz).
+"""
 
 from __future__ import annotations
 
-import math
+import numpy as np
+from scipy.spatial.transform import Rotation, Slerp
 
 from hand_interaction.types import Quaternion, Vector2, Vector3
 
 _EPS = 1e-12
 
 
+# --- adapters ----------------------------------------------------------------
+
+
+def _as2(v: Vector2) -> np.ndarray:
+    return np.asarray([v.x, v.y], dtype=np.float64)
+
+
+def _vec2(a: np.ndarray) -> Vector2:
+    return Vector2(float(a[0]), float(a[1]))
+
+
+def _as3(v: Vector3) -> np.ndarray:
+    return np.asarray([v.x, v.y, v.z], dtype=np.float64)
+
+
+def _vec3(a: np.ndarray) -> Vector3:
+    return Vector3(float(a[0]), float(a[1]), float(a[2]))
+
+
+def _as_rotation(q: Quaternion) -> Rotation:
+    """Public wxyz → scipy Rotation (xyzw)."""
+    return Rotation.from_quat([q.x, q.y, q.z, q.w])
+
+
+def _from_rotation(r: Rotation) -> Quaternion:
+    """scipy Rotation → public wxyz (shortest-arc, w >= 0 when possible)."""
+    x, y, z, w = r.as_quat()
+    if w < 0.0:
+        x, y, z, w = -x, -y, -z, -w
+    return Quaternion(float(w), float(x), float(y), float(z))
+
+
 # --- Vector2 -----------------------------------------------------------------
 
 
 def vec2_add(a: Vector2, b: Vector2) -> Vector2:
-    return Vector2(a.x + b.x, a.y + b.y)
+    return _vec2(_as2(a) + _as2(b))
 
 
 def vec2_sub(a: Vector2, b: Vector2) -> Vector2:
-    return Vector2(a.x - b.x, a.y - b.y)
+    return _vec2(_as2(a) - _as2(b))
 
 
 def vec2_scale(v: Vector2, s: float) -> Vector2:
-    return Vector2(v.x * s, v.y * s)
+    return _vec2(_as2(v) * s)
 
 
 def vec2_norm(v: Vector2) -> float:
-    return math.hypot(v.x, v.y)
+    return float(np.linalg.norm(_as2(v)))
 
 
 # --- Vector3 -----------------------------------------------------------------
 
 
 def vec3_add(a: Vector3, b: Vector3) -> Vector3:
-    return Vector3(a.x + b.x, a.y + b.y, a.z + b.z)
+    return _vec3(_as3(a) + _as3(b))
 
 
 def vec3_sub(a: Vector3, b: Vector3) -> Vector3:
-    return Vector3(a.x - b.x, a.y - b.y, a.z - b.z)
+    return _vec3(_as3(a) - _as3(b))
 
 
 def vec3_scale(v: Vector3, s: float) -> Vector3:
-    return Vector3(v.x * s, v.y * s, v.z * s)
+    return _vec3(_as3(v) * s)
 
 
 def vec3_dot(a: Vector3, b: Vector3) -> float:
-    return a.x * b.x + a.y * b.y + a.z * b.z
+    return float(np.dot(_as3(a), _as3(b)))
 
 
 def vec3_cross(a: Vector3, b: Vector3) -> Vector3:
-    return Vector3(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    )
+    return _vec3(np.cross(_as3(a), _as3(b)))
 
 
 def vec3_norm(v: Vector3) -> float:
-    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    return float(np.linalg.norm(_as3(v)))
 
 
 def vec3_normalize(v: Vector3) -> Vector3:
-    n = vec3_norm(v)
+    a = _as3(v)
+    n = float(np.linalg.norm(a))
     if n < _EPS:
         return Vector3(0.0, 0.0, 0.0)
-    return vec3_scale(v, 1.0 / n)
+    return _vec3(a / n)
 
 
-# --- Quaternion --------------------------------------------------------------
+# --- Quaternion (via scipy.Rotation) ----------------------------------------
 
 
 def quat_identity() -> Quaternion:
-    return Quaternion(1.0, 0.0, 0.0, 0.0)
+    return _from_rotation(Rotation.identity())
 
 
 def quat_dot(a: Quaternion, b: Quaternion) -> float:
-    return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z
+    return float(a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z)
 
 
 def quat_norm(q: Quaternion) -> float:
-    return math.sqrt(quat_dot(q, q))
+    return float(np.linalg.norm([q.w, q.x, q.y, q.z]))
 
 
 def quat_normalize(q: Quaternion) -> Quaternion:
     n = quat_norm(q)
     if n < _EPS:
         return quat_identity()
-    inv = 1.0 / n
-    return Quaternion(q.w * inv, q.x * inv, q.y * inv, q.z * inv)
+    return Quaternion(q.w / n, q.x / n, q.y / n, q.z / n)
 
 
 def quat_conjugate(q: Quaternion) -> Quaternion:
@@ -94,144 +127,50 @@ def quat_conjugate(q: Quaternion) -> Quaternion:
 
 
 def quat_inverse(q: Quaternion) -> Quaternion:
-    """Inverse for a (near-)unit quaternion: conjugate / |q|²."""
-    n2 = quat_dot(q, q)
-    if n2 < _EPS:
-        return quat_identity()
-    inv = 1.0 / n2
-    return Quaternion(q.w * inv, -q.x * inv, -q.y * inv, -q.z * inv)
+    return _from_rotation(_as_rotation(q).inv())
 
 
 def quat_multiply(a: Quaternion, b: Quaternion) -> Quaternion:
     """Hamilton product a ⊗ b (apply b first, then a)."""
-    return Quaternion(
-        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    )
+    return _from_rotation(_as_rotation(a) * _as_rotation(b))
 
 
 def quat_angle(q: Quaternion) -> float:
-    """Rotation angle in radians of a (near-)unit quaternion, in [0, π]."""
-    q = quat_normalize(q)
-    # Clamp for numerical safety: angle = 2 * acos(|w|)
-    w = min(1.0, max(-1.0, abs(q.w)))
-    return 2.0 * math.acos(w)
+    """Rotation angle in radians, in [0, π]."""
+    return float(_as_rotation(q).magnitude())
 
 
 def quat_slerp(a: Quaternion, b: Quaternion, t: float) -> Quaternion:
-    """Spherical linear interpolation; t in [0, 1]. Takes shortest arc."""
-    a = quat_normalize(a)
-    b = quat_normalize(b)
-    dot = quat_dot(a, b)
-
-    # Same hemisphere.
-    if dot < 0.0:
-        b = Quaternion(-b.w, -b.x, -b.y, -b.z)
-        dot = -dot
-
-    if dot > 0.9995:
-        # Nearly parallel — fall back to normalized lerp.
-        return quat_normalize(
-            Quaternion(
-                a.w + t * (b.w - a.w),
-                a.x + t * (b.x - a.x),
-                a.y + t * (b.y - a.y),
-                a.z + t * (b.z - a.z),
-            )
-        )
-
-    dot = min(1.0, max(-1.0, dot))
-    theta = math.acos(dot)
-    sin_theta = math.sin(theta)
-    w1 = math.sin((1.0 - t) * theta) / sin_theta
-    w2 = math.sin(t * theta) / sin_theta
-    return Quaternion(
-        w1 * a.w + w2 * b.w,
-        w1 * a.x + w2 * b.x,
-        w1 * a.y + w2 * b.y,
-        w1 * a.z + w2 * b.z,
-    )
+    """Spherical linear interpolation; t in [0, 1]. Shortest arc."""
+    ra, rb = _as_rotation(a), _as_rotation(b)
+    # Same hemisphere so Slerp takes the short path.
+    if np.dot(ra.as_quat(), rb.as_quat()) < 0.0:
+        q = rb.as_quat()
+        rb = Rotation.from_quat(-q)
+    slerp = Slerp([0.0, 1.0], Rotation.concatenate([ra, rb]))
+    return _from_rotation(slerp(t))
 
 
 def quat_from_rotation_matrix(m: tuple[tuple[float, float, float], ...]) -> Quaternion:
-    """Build a quaternion from a 3×3 rotation matrix (row-major, right-handed).
-
-    ``m[i]`` is row i; columns are the basis vectors expressed in world space
-    when interpreting rows as (right, up, forward) or any orthonormal triad
-    passed in consistently by the caller.
-    """
-    m00, m01, m02 = m[0]
-    m10, m11, m12 = m[1]
-    m20, m21, m22 = m[2]
-    trace = m00 + m11 + m22
-
-    if trace > 0.0:
-        s = 0.5 / math.sqrt(trace + 1.0)
-        return quat_normalize(
-            Quaternion(
-                0.25 / s,
-                (m21 - m12) * s,
-                (m02 - m20) * s,
-                (m10 - m01) * s,
-            )
-        )
-    if m00 > m11 and m00 > m22:
-        s = 2.0 * math.sqrt(1.0 + m00 - m11 - m22)
-        return quat_normalize(
-            Quaternion(
-                (m21 - m12) / s,
-                0.25 * s,
-                (m01 + m10) / s,
-                (m02 + m20) / s,
-            )
-        )
-    if m11 > m22:
-        s = 2.0 * math.sqrt(1.0 + m11 - m00 - m22)
-        return quat_normalize(
-            Quaternion(
-                (m02 - m20) / s,
-                (m01 + m10) / s,
-                0.25 * s,
-                (m12 + m21) / s,
-            )
-        )
-    s = 2.0 * math.sqrt(1.0 + m22 - m00 - m11)
-    return quat_normalize(
-        Quaternion(
-            (m10 - m01) / s,
-            (m02 + m20) / s,
-            (m12 + m21) / s,
-            0.25 * s,
-        )
-    )
+    """Build a quaternion from a 3×3 rotation matrix (row-major)."""
+    return _from_rotation(Rotation.from_matrix(np.asarray(m, dtype=np.float64)))
 
 
 def quat_from_axis_angle(axis: Vector3, angle: float) -> Quaternion:
     """Unit quaternion rotating ``angle`` radians around ``axis``."""
-    axis = vec3_normalize(axis)
-    if vec3_norm(axis) < _EPS:
+    a = _as3(axis)
+    n = float(np.linalg.norm(a))
+    if n < _EPS:
         return quat_identity()
-    half = 0.5 * angle
-    s = math.sin(half)
-    return Quaternion(math.cos(half), axis.x * s, axis.y * s, axis.z * s)
+    return _from_rotation(Rotation.from_rotvec((a / n) * angle))
 
 
 def delta_rotation_local(previous: Quaternion, current: Quaternion) -> Quaternion:
-    """Local-frame delta: Δq = normalize(q_prev⁻¹ ⊗ q_curr)."""
-    return quat_normalize(quat_multiply(quat_inverse(previous), current))
+    """Local-frame delta: Δq = q_prev⁻¹ ⊗ q_curr."""
+    return _from_rotation(_as_rotation(previous).inv() * _as_rotation(current))
 
 
 def project_delta_to_screen_angle(delta: Quaternion) -> float:
-    """Signed radians around screen +Z from a local delta quaternion.
-
-    Uses the twist of Δq about +Z (atan2 of the z-component after projecting
-    out xy twist). Suitable for abstract HandRotate events.
-    """
-    d = quat_normalize(delta)
-    # Ensure shortest arc representation (w >= 0).
-    if d.w < 0.0:
-        d = Quaternion(-d.w, -d.x, -d.y, -d.z)
-    # Rotation about Z: q ≈ (cos(θ/2), 0, 0, sin(θ/2))
-    return 2.0 * math.atan2(d.z, d.w)
+    """Signed radians around screen +Z from a local delta quaternion."""
+    # Rotation vector z-component is exact for pure Z twists; good abstract signal.
+    return float(_as_rotation(delta).as_rotvec()[2])
