@@ -1,4 +1,4 @@
-"""Tunable thresholds for pose estimation and (later) interaction."""
+"""Tunable thresholds for pose estimation and pinch detection."""
 
 # Guard against a degenerate hand dividing by ~zero.
 MIN_HAND_SCALE = 1e-3
@@ -28,3 +28,16 @@ PINKY_MCP = 17
 
 PALM_IDS = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
 MCP_IDS = (INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
+
+# --- Pinch (3D ratio / hand size; ON/OFF hysteresis) -------------------------
+# Median window also acts as the hold required to *start* a pinch.
+GESTURE_WINDOW_FRAMES = 5
+
+# Thumb–index gap / hand size. Tips touching ~0.15; relaxed thumb past ~0.4.
+PINCH_RATIO_ON = 0.32
+PINCH_RATIO_OFF = 0.55
+
+# Exit threshold scales with the gap actually held while pinching.
+PINCH_RELEASE_FACTOR = 1.4
+PINCH_RELEASE_MAX = 0.85
+PINCH_BASELINE_FRAMES = 20
