@@ -6,3 +6,4 @@ venv/
 .env
 models/*.task
 .DS_Store
+.cursor
