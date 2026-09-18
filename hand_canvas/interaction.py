@@ -71,6 +71,7 @@ from hand_canvas.geometry import (
     is_visible_figure,
     nearest_corner,
     nearest_corner_excluding,
+    clamp_rectangle_to_canvas,
     point_in_rectangle,
     rectangle_from_points,
     resize_rectangle_from_corner,
@@ -711,7 +712,8 @@ class InteractionEngine:
             pulled = self._trash_pull(moved, position, session)
             if pulled is None and dx == 0.0 and dy == 0.0:
                 return None
-            return pulled or moved, session
+            # Soft stop at the canvas edge while dragging (fling still bounces).
+            return clamp_rectangle_to_canvas(pulled or moved), session
 
         return None
 

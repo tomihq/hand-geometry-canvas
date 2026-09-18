@@ -124,6 +124,37 @@ def translate_rectangle(rect: Rectangle, dx: float, dy: float) -> Rectangle:
     )
 
 
+def clamp_rectangle_to_canvas(
+    rect: Rectangle,
+    *,
+    left: float = 0.0,
+    top: float = 0.0,
+    right: float = 1.0,
+    bottom: float = 1.0,
+) -> Rectangle:
+    """Keep ``rect`` fully inside the canvas. Stops at the edge — no bounce."""
+    span_x = right - left
+    span_y = bottom - top
+    if rect.width >= span_x:
+        x = left + (span_x - rect.width) * 0.5
+    else:
+        x = min(max(rect.x, left), right - rect.width)
+    if rect.height >= span_y:
+        y = top + (span_y - rect.height) * 0.5
+    else:
+        y = min(max(rect.y, top), bottom - rect.height)
+    if x == rect.x and y == rect.y:
+        return rect
+    return Rectangle(
+        x=x,
+        y=y,
+        width=rect.width,
+        height=rect.height,
+        id=rect.id,
+        z=rect.z,
+    )
+
+
 def rectangle_corners(rect: Rectangle) -> dict[Corner, Point]:
     return {
         Corner.TL: Point(rect.x, rect.y),

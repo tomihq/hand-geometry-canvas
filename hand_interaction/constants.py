@@ -41,3 +41,10 @@ PINCH_RATIO_OFF = 0.55
 PINCH_RELEASE_FACTOR = 1.4
 PINCH_RELEASE_MAX = 0.85
 PINCH_BASELINE_FRAMES = 20
+
+# --- Interaction event deadzones (sensitive) --------------------------------
+MOVE_EPSILON = 5e-4  # ‖Δposition‖ in normalized screen units
+ROTATE_EPSILON = 0.005  # ~0.3° in radians (projected screen angle)
+
+# Frames a held pinch survives with no hand before force-end.
+HAND_LOST_GRACE_FRAMES = 3

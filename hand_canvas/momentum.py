@@ -47,9 +47,10 @@ class Flight:
 def _bounce(low: float, size: float, velocity: float) -> tuple[float, float]:
     """Reflect one axis off the canvas edges, keeping the figure inside.
 
-    The reflected position is clamped as well as mirrored. Dragging is not
-    fenced in, so a figure can be released already hanging off the edge, and
-    mirroring a large overshoot would fling it clean out the opposite side.
+    The reflected position is clamped as well as mirrored. Dragging already
+    keeps figures inside, but a figure can still start a fling slightly past
+    an edge from sizing; mirroring a large overshoot would fling it clean out
+    the opposite side.
     """
     limit = 1.0 - size
     if limit <= 0.0:
