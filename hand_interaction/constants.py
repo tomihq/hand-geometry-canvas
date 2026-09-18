@@ -48,3 +48,14 @@ ROTATE_EPSILON = 0.005  # ~0.3° in radians (projected screen angle)
 
 # Frames a held pinch survives with no hand before force-end.
 HAND_LOST_GRACE_FRAMES = 3
+
+# --- Capture / MediaPipe ----------------------------------------------------
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 60
+CAMERA_FOURCC = "MJPG"
+CAMERA_BUFFER_SIZE = 2
+
+USE_GPU_INFERENCE = True
+TRACKING_MAX_WIDTH = 640

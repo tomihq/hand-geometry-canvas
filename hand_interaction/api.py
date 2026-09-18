@@ -54,13 +54,25 @@ class HandGesture:
 def create_hand_gesture(
     *,
     source: HandEventSource | None = None,
+    live: bool = False,
+    device_index: int = 0,
+    num_hands: int = 2,
 ) -> HandGesture:
     """Create a hand-gesture session.
 
-    Without ``source``, uses :class:`FakeHandSource` (no camera) so tests and
-    headless consumers work. Paso 8 will offer a MediaPipe-backed default.
+    - Default: :class:`FakeHandSource` (no camera) — safe for tests.
+    - ``live=True``: :class:`LiveHandSource` (camera + MediaPipe).
+    - Or pass an explicit ``source``.
     """
-    return HandGesture(source if source is not None else FakeHandSource())
+    if source is not None:
+        return HandGesture(source)
+    if live:
+        from hand_interaction.live import LiveHandSource
+
+        return HandGesture(
+            LiveHandSource(device_index=device_index, num_hands=num_hands)
+        )
+    return HandGesture(FakeHandSource())
 
 
 __all__ = [
