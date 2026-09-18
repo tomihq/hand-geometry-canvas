@@ -51,6 +51,21 @@ python -m demo.hand_pose_demo
 
 Shows: skeleton, PINCH, POSITION, ROTATION (Euler for display only), CONFIDENCE.
 
+## WebSocket server (independent process)
+
+Publish `HandEvent` JSON to localhost clients:
+
+```bash
+hand-gesture serve
+# or: python -m hand_interaction serve
+```
+
+Listens on `ws://127.0.0.1:8766` by default. Verify with:
+
+```bash
+python examples/websocket_client.py
+```
+
 ## Tests
 
 ```bash

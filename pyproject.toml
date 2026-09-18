@@ -13,7 +13,11 @@ dependencies = [
     "scipy>=1.11.0",
     "opencv-python>=4.8.0",
     "mediapipe>=0.10.14",
+    "websockets>=12",
 ]
+
+[project.scripts]
+hand-gesture = "hand_interaction.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
