@@ -6,6 +6,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
+
 from hand_interaction.camera import Camera
 from hand_interaction.fake import EventHandler, PoseHandler, Unsubscribe
 from hand_interaction.interaction import InteractionEngine, TrackedHand
@@ -43,6 +45,8 @@ class LiveHandSource:
         self._stop = threading.Event()
         self._started = False
         self._error: BaseException | None = None
+        self._frame_lock = threading.Lock()
+        self._latest_frame: np.ndarray | None = None
 
     @property
     def started(self) -> bool:
@@ -105,16 +109,27 @@ class LiveHandSource:
             self._landmarker = None
         self._pose_estimator.reset()
         self._engine.reset()
+        with self._frame_lock:
+            self._latest_frame = None
         self._started = False
 
     def poll_error(self) -> BaseException | None:
         return self._error
+
+    def get_frame(self) -> np.ndarray | None:
+        """Copy of the latest BGR camera frame, or None if none yet."""
+        with self._frame_lock:
+            if self._latest_frame is None:
+                return None
+            return self._latest_frame.copy()
 
     def _loop(self) -> None:
         assert self._landmarker is not None
         try:
             while not self._stop.is_set():
                 frame = self._camera.read(timeout=2.0)
+                with self._frame_lock:
+                    self._latest_frame = frame.image
                 detected = self._landmarker.detect(frame)
                 tracked: list[TrackedHand] = []
                 for hand in detected:

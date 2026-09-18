@@ -13,9 +13,10 @@ The library does **not** know about your app, objects, or rendering. It only emi
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 ```
 
-Place or auto-download `models/hand_landmarker.task` (MediaPipe).
+`pip install -e .` registers the `hand-gesture` CLI. Place or auto-download `models/hand_landmarker.task` (MediaPipe).
 
 ## Quick start (fake / tests)
 
@@ -57,7 +58,9 @@ Publish `HandEvent` JSON to localhost clients:
 
 ```bash
 hand-gesture serve
-# or: python -m hand_interaction serve
+# live camera window + WebSocket:
+hand-gesture serve --preview
+# or: python -m hand_interaction serve --preview
 ```
 
 Listens on `ws://127.0.0.1:8766` by default. Verify with:
