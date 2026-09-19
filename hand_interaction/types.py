@@ -79,4 +79,46 @@ class HandRotate:
     type: Literal["hand.rotate"] = field(default="hand.rotate", init=False)
 
 
-HandEvent = PinchStart | PinchEnd | HandMove | HandRotate
+@dataclass(frozen=True)
+class ResizeStart:
+    """Second hand joined while the first still pinches (canvas helper latch).
+
+    Mirrors hand_canvas lock model: owner holds, helper drives resize via
+    cursor position — the consumer applies corner-follow on its own figure.
+    """
+
+    owner_hand_id: str
+    helper_hand_id: str
+    position: Vector2
+    type: Literal["resize.start"] = field(default="resize.start", init=False)
+
+
+@dataclass(frozen=True)
+class ResizeMove:
+    """Helper hand moved while owner still pinches — follow this cursor to resize."""
+
+    owner_hand_id: str
+    helper_hand_id: str
+    position: Vector2
+    delta_position: Vector2
+    type: Literal["resize.move"] = field(default="resize.move", init=False)
+
+
+@dataclass(frozen=True)
+class ResizeEnd:
+    """Owner or helper released pinch — end of helper resize session."""
+
+    owner_hand_id: str
+    helper_hand_id: str
+    type: Literal["resize.end"] = field(default="resize.end", init=False)
+
+
+HandEvent = (
+    PinchStart
+    | PinchEnd
+    | HandMove
+    | HandRotate
+    | ResizeStart
+    | ResizeMove
+    | ResizeEnd
+)

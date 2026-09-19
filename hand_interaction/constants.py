@@ -45,6 +45,8 @@ PINCH_BASELINE_FRAMES = 20
 # --- Interaction event deadzones (sensitive) --------------------------------
 MOVE_EPSILON = 5e-4  # ‖Δposition‖ in normalized screen units
 ROTATE_EPSILON = 0.005  # ~0.3° in radians (projected screen angle)
+# Helper cursor deadzone while owner holds (same units as MOVE_EPSILON).
+RESIZE_EPSILON = 5e-4
 
 # Frames a held pinch survives with no hand before force-end.
 HAND_LOST_GRACE_FRAMES = 3

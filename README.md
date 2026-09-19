@@ -5,7 +5,12 @@ Camera → hand tracking → 3D pose → abstract interaction events.
 The library does **not** know about your app, objects, or rendering. It only emits:
 
 - `HandPose` (3D palm + quaternion) via `on_pose`
-- `HandEvent` (2D/abstract: pinch, move, rotate) via `on_event`
+- `HandEvent` (2D/abstract: pinch, move, rotate, **owner/helper resize**) via `on_event`
+
+Lock model (same idea as `hand_canvas`): the first hand to pinch is the owner;
+while it holds, a second pinch becomes the helper and emits `resize.start` /
+`resize.move` / `resize.end` from the **helper cursor** (not inter-hand distance).
+The consumer applies corner-follow resize on its own selected figure.
 
 ## Install
 

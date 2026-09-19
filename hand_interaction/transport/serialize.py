@@ -11,6 +11,9 @@ from hand_interaction.types import (
     HandRotate,
     PinchEnd,
     PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
 )
 
@@ -45,6 +48,27 @@ def event_to_dict(event: HandEvent) -> dict[str, Any]:
             "type": event.type,
             "hand_id": event.hand_id,
             "delta_rotation": event.delta_rotation,
+        }
+    if isinstance(event, ResizeStart):
+        return {
+            "type": event.type,
+            "owner_hand_id": event.owner_hand_id,
+            "helper_hand_id": event.helper_hand_id,
+            "position": _vector2_to_dict(event.position),
+        }
+    if isinstance(event, ResizeMove):
+        return {
+            "type": event.type,
+            "owner_hand_id": event.owner_hand_id,
+            "helper_hand_id": event.helper_hand_id,
+            "position": _vector2_to_dict(event.position),
+            "delta_position": _vector2_to_dict(event.delta_position),
+        }
+    if isinstance(event, ResizeEnd):
+        return {
+            "type": event.type,
+            "owner_hand_id": event.owner_hand_id,
+            "helper_hand_id": event.helper_hand_id,
         }
     raise TypeError(f"unsupported HandEvent: {type(event)!r}")
 

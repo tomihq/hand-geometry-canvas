@@ -107,6 +107,9 @@ def test_public_exports() -> None:
         "PinchEnd",
         "HandMove",
         "HandRotate",
+        "ResizeStart",
+        "ResizeMove",
+        "ResizeEnd",
         "HandEvent",
     ):
         assert hasattr(hi, name)

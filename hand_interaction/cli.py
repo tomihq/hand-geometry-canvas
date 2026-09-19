@@ -22,6 +22,9 @@ from hand_interaction.types import (
     HandRotate,
     PinchEnd,
     PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
 )
 
@@ -78,6 +81,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _apply_preview_event(state: dict[str, _PreviewHand], event: HandEvent) -> None:
+    if isinstance(event, (ResizeStart, ResizeMove, ResizeEnd)):
+        return
     hand = state.setdefault(event.hand_id, _PreviewHand())
     hand.last_type = event.type
     if isinstance(event, (PinchStart, PinchEnd, HandMove)):

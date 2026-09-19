@@ -58,6 +58,11 @@ class PinchDetector:
         self.last_release_ratio = PINCH_RATIO_OFF
         self._last_position = Vector2(0.5, 0.5)
 
+    @property
+    def last_position(self) -> Vector2:
+        """Most recent thumb–index midpoint (hybrid screen space)."""
+        return self._last_position
+
     def reset(self) -> None:
         self._ratios.clear()
         self._baseline.clear()

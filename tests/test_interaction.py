@@ -13,10 +13,13 @@ from hand_interaction.types import (
     PinchEnd,
     PinchStart,
     Quaternion,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
     Vector3,
 )
-from tests.test_pinch import _hand_with_gap
+from tests.test_pinch import _hand_at, _hand_with_gap
 
 
 def _pose(
@@ -36,8 +39,20 @@ def _pose(
     )
 
 
-def _tracked(pose: HandPose, gap_ratio: float = 0.9) -> TrackedHand:
-    return TrackedHand(pose=pose, landmarks=_hand_with_gap(gap_ratio))
+def _tracked(
+    pose: HandPose,
+    gap_ratio: float = 0.9,
+    *,
+    ox: float | None = None,
+    oy: float | None = None,
+) -> TrackedHand:
+    if ox is None:
+        ox = pose.palm.x
+    if oy is None:
+        oy = pose.palm.y
+    # Image y is top-origin; public palm.y is bottom-origin.
+    landmarks = _hand_at(ox, 1.0 - oy, gap_ratio)
+    return TrackedHand(pose=pose, landmarks=landmarks)
 
 
 def test_move_positive_and_negative_deltas() -> None:
@@ -127,6 +142,58 @@ def test_multi_hand_independent() -> None:
     assert set(moves) == {"Left", "Right"}
     assert moves["Left"].delta_position.x == pytest.approx(0.05)
     assert moves["Right"].delta_position.x == pytest.approx(-0.05)
+
+
+def test_owner_pinch_then_helper_emits_resize() -> None:
+    """Canvas lock model: first pinch = owner; second = helper resize cursor."""
+    eng = InteractionEngine(resize_epsilon=1e-6)
+
+    # Owner (Right) pinches alone first.
+    for _ in range(5):
+        eng.update([_tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2)])
+    assert eng._owner_hand_id == "Right"
+
+    # Helper (Left) joins while owner still holds.
+    events: list = []
+    for _ in range(5):
+        events.extend(
+            eng.update(
+                [
+                    _tracked(_pose("Left", 0.3, 0.5), gap_ratio=0.2),
+                    _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
+                ]
+            )
+        )
+    starts = [e for e in events if isinstance(e, ResizeStart)]
+    assert len(starts) == 1
+    assert starts[0].owner_hand_id == "Right"
+    assert starts[0].helper_hand_id == "Left"
+
+    # Helper cursor moves → resize.move follows helper position (not distance).
+    moved = eng.update(
+        [
+            _tracked(_pose("Left", 0.2, 0.5), gap_ratio=0.2),
+            _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
+        ]
+    )
+    resizes = [e for e in moved if isinstance(e, ResizeMove)]
+    assert len(resizes) == 1
+    assert resizes[0].helper_hand_id == "Left"
+    assert resizes[0].delta_position.x != 0.0
+
+    # Helper releases → resize.end; owner keeps pinch.
+    ended: list = []
+    for _ in range(5):
+        ended.extend(
+            eng.update(
+                [
+                    _tracked(_pose("Left", 0.2, 0.5), gap_ratio=0.9),
+                    _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
+                ]
+            )
+        )
+    assert any(isinstance(e, ResizeEnd) for e in ended)
+    assert eng._owner_hand_id == "Right"
 
 
 def test_events_do_not_expose_3d_types() -> None:

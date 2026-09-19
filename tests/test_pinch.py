@@ -17,13 +17,19 @@ from hand_interaction.types import PinchEnd, PinchStart, Vector2
 
 
 def _hand_with_gap(gap: float, scale: float = 0.1) -> np.ndarray:
-    """Synthetic hand whose thumb–index 3D gap / scale ≈ gap/scale... wait.
+    """Synthetic hand; pinch_ratio_3d ≈ gap (gap is the desired ratio)."""
+    return _hand_at(0.5, 0.5, gap, scale=scale)
 
-    We set hand_scale ~scale via MCP spans, and thumb–index distance to
-    ``gap_ratio * scale`` so pinch_ratio_3d ≈ gap_ratio.
-    """
+
+def _hand_at(
+    ox: float,
+    oy: float,
+    gap: float,
+    scale: float = 0.1,
+) -> np.ndarray:
+    """Synthetic hand centered near (ox, oy) with pinch ratio ≈ gap."""
     pts = np.zeros((21, 3), dtype=np.float64)
-    ox, oy, oz = 0.5, 0.5, 0.0
+    oz = 0.0
     pts[WRIST] = (ox, oy, oz)
     # MCP spans define scale ≈ 0.1
     pts[5] = (ox + 0.4 * scale, oy - 0.3 * scale, oz)

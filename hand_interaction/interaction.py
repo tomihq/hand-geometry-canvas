@@ -2,6 +2,12 @@
 
 Consumers get Vector2 moves and float rotations — never Vector3/Quaternion
 on the event channel. Pinch uses landmarks; pose drives move/rotate.
+
+Bimanual resize follows the hand_canvas lock model (no figures here):
+  - First hand to pinch is the owner (grab / move via pinch + hand.move).
+  - Second hand to pinch while the owner still holds becomes the helper.
+  - Helper cursor motion emits resize.* for the consumer to corner-follow.
+  - Helper cannot steal ownership; session ends when either pinch releases.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import numpy as np
 from hand_interaction.constants import (
     HAND_LOST_GRACE_FRAMES,
     MOVE_EPSILON,
+    RESIZE_EPSILON,
     ROTATE_EPSILON,
 )
 from hand_interaction.math3d import (
@@ -27,7 +34,11 @@ from hand_interaction.types import (
     HandMove,
     HandPose,
     HandRotate,
-    Quaternion,
+    PinchEnd,
+    PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
     Vector3,
 )
@@ -58,22 +69,37 @@ class _HandState:
     lost_frames: int = 0
 
 
+@dataclass
+class _ResizeSession:
+    """Owner holds; helper cursor drives resize (canvas-style latch)."""
+
+    owner_hand_id: str
+    helper_hand_id: str
+    last_helper_position: Vector2
+
+
 class InteractionEngine:
-    """Multi-hand pose → abstract HandEvent list (move / rotate / pinch)."""
+    """Multi-hand pose → abstract HandEvent list (move / rotate / pinch / resize)."""
 
     def __init__(
         self,
         move_epsilon: float = MOVE_EPSILON,
         rotate_epsilon: float = ROTATE_EPSILON,
+        resize_epsilon: float = RESIZE_EPSILON,
         grace_frames: int = HAND_LOST_GRACE_FRAMES,
     ) -> None:
         self._move_eps = move_epsilon
         self._rotate_eps = rotate_epsilon
+        self._resize_eps = resize_epsilon
         self._grace = grace_frames
         self._hands: dict[str, _HandState] = {}
+        self._owner_hand_id: str | None = None
+        self._resize: _ResizeSession | None = None
 
     def reset(self) -> None:
         self._hands.clear()
+        self._owner_hand_id = None
+        self._resize = None
 
     def _state(self, hand_id: str) -> _HandState:
         if hand_id not in self._hands:
@@ -97,6 +123,7 @@ class InteractionEngine:
                 continue
             events.extend(self._update_missing(hand_id, state))
 
+        events.extend(self._update_owner_and_resize())
         return events
 
     def _update_present(
@@ -106,7 +133,14 @@ class InteractionEngine:
         pose = tracked.pose
         assert state.pinch is not None
 
-        events.extend(state.pinch.update(tracked.landmarks, pose.hand_id))
+        pinch_events = state.pinch.update(tracked.landmarks, pose.hand_id)
+        for event in pinch_events:
+            if isinstance(event, PinchStart) and self._owner_hand_id is None:
+                # First pinch wins the lock (hand_canvas owner).
+                self._owner_hand_id = event.hand_id
+            elif isinstance(event, PinchEnd) and event.hand_id == self._owner_hand_id:
+                self._owner_hand_id = None
+        events.extend(pinch_events)
 
         prev = state.previous_pose
         if prev is not None:
@@ -141,9 +175,102 @@ class InteractionEngine:
         assert state.pinch is not None
         if state.pinch.phase is PinchPhase.PINCHING and state.lost_frames < self._grace:
             state.lost_frames += 1
-            # Hold: do not clear previous_pose; deltas stay zero next reappear.
             return []
 
         events = state.pinch.force_end(hand_id)
+        if any(isinstance(e, PinchEnd) and e.hand_id == self._owner_hand_id for e in events):
+            self._owner_hand_id = None
         del self._hands[hand_id]
+        return events
+
+    def _pinching_ids(self) -> list[str]:
+        ids: list[str] = []
+        for hand_id, state in self._hands.items():
+            assert state.pinch is not None
+            if state.pinch.phase is PinchPhase.PINCHING:
+                ids.append(hand_id)
+        return ids
+
+    def _pinch_position(self, hand_id: str) -> Vector2 | None:
+        state = self._hands.get(hand_id)
+        if state is None or state.pinch is None:
+            return None
+        if state.pinch.phase is not PinchPhase.PINCHING:
+            return None
+        return state.pinch.last_position
+
+    def _end_resize(self) -> list[HandEvent]:
+        if self._resize is None:
+            return []
+        session = self._resize
+        self._resize = None
+        return [
+            ResizeEnd(
+                owner_hand_id=session.owner_hand_id,
+                helper_hand_id=session.helper_hand_id,
+            )
+        ]
+
+    def _update_owner_and_resize(self) -> list[HandEvent]:
+        """Second pinch while owner holds → helper resize (canvas lock model)."""
+        events: list[HandEvent] = []
+        pinching = self._pinching_ids()
+        pinching_set = set(pinching)
+
+        if self._owner_hand_id is not None and self._owner_hand_id not in pinching_set:
+            events.extend(self._end_resize())
+            self._owner_hand_id = None
+
+        # Remaining pinch after owner release keeps the lock (still holding).
+        if self._owner_hand_id is None and pinching:
+            self._owner_hand_id = pinching[0]
+
+        owner = self._owner_hand_id
+        if owner is None:
+            events.extend(self._end_resize())
+            return events
+
+        helpers = [hid for hid in pinching if hid != owner]
+        if not helpers:
+            events.extend(self._end_resize())
+            return events
+
+        # One helper at a time; cannot steal the lock.
+        helper = helpers[0]
+        if self._resize is not None and self._resize.helper_hand_id not in pinching_set:
+            events.extend(self._end_resize())
+
+        helper_pos = self._pinch_position(helper)
+        if helper_pos is None:
+            events.extend(self._end_resize())
+            return events
+
+        if self._resize is None or self._resize.helper_hand_id != helper:
+            if self._resize is not None:
+                events.extend(self._end_resize())
+            self._resize = _ResizeSession(
+                owner_hand_id=owner,
+                helper_hand_id=helper,
+                last_helper_position=helper_pos,
+            )
+            events.append(
+                ResizeStart(
+                    owner_hand_id=owner,
+                    helper_hand_id=helper,
+                    position=helper_pos,
+                )
+            )
+            return events
+
+        delta = vec2_sub(helper_pos, self._resize.last_helper_position)
+        if vec2_norm(delta) > self._resize_eps:
+            events.append(
+                ResizeMove(
+                    owner_hand_id=owner,
+                    helper_hand_id=helper,
+                    position=helper_pos,
+                    delta_position=delta,
+                )
+            )
+            self._resize.last_helper_position = helper_pos
         return events

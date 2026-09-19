@@ -33,6 +33,9 @@ from hand_interaction.types import (
     HandRotate,
     PinchEnd,
     PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
 )
 
@@ -85,6 +88,8 @@ def quat_to_euler_deg(pose: HandPose) -> tuple[float, float, float]:
 
 
 def apply_event(hud: dict[str, HandHud], event: HandEvent) -> None:
+    if isinstance(event, (ResizeStart, ResizeMove, ResizeEnd)):
+        return
     state = hud.setdefault(event.hand_id, HandHud())
     if isinstance(event, PinchStart):
         state.pinching = True
