@@ -1,33 +1,35 @@
-"""Configurable thresholds for gesture detection and interaction."""
+"""Configurable thresholds for gesture detection and interaction.
 
-# --- Gesture detection -------------------------------------------------------
-# Every threshold below is a ratio of hand size, so camera distance is
-# irrelevant. ON/OFF pairs leave a margin band in between: while a measure sits
-# inside the band the current gesture simply holds, instead of flickering.
+Shared pinch / capture / smoothing knobs live in ``hand_interaction.constants``
+(single source of truth). This module re-exports them and adds canvas-only
+tuning (fist, sweep, trash, fling, hit radii, window).
+"""
 
-# Landmark noise is smoothed by taking the median of this many frames. It also
-# sets the hold required to *start* a gesture (~5 frames ≈ 150–300ms).
-GESTURE_WINDOW_FRAMES = 5
+from hand_interaction.constants import (
+    CAMERA_BUFFER_SIZE,
+    CAMERA_FOURCC,
+    CAMERA_FPS,
+    CAMERA_HEIGHT,
+    CAMERA_INDEX,
+    CAMERA_WIDTH,
+    GESTURE_WINDOW_FRAMES,
+    HAND_LOST_GRACE_FRAMES,
+    MIN_HAND_SCALE,
+    PINCH_BASELINE_FRAMES,
+    PINCH_RATIO_OFF,
+    PINCH_RATIO_ON,
+    PINCH_RELEASE_FACTOR,
+    PINCH_RELEASE_MAX,
+    SMOOTH_BETA,
+    SMOOTH_DERIVATIVE_CUTOFF,
+    TRACKING_MAX_WIDTH,
+    USE_GPU_INFERENCE,
+)
+from hand_interaction.constants import SMOOTH_MIN_CUTOFF_XY as SMOOTH_MIN_CUTOFF
 
-# Guard against a degenerate hand (all landmarks stacked) dividing by ~zero.
-MIN_HAND_SCALE = 1e-3
-
-# Thumb–index gap / hand size. Tips touching measure ~0.15; a relaxed thumb
-# sits past 0.4, so 0.32 → 0.55 is a wide margin either way.
-PINCH_RATIO_ON = 0.32
-PINCH_RATIO_OFF = 0.55
-
-# Letting go is judged against the gap actually being held, not only the fixed
-# figure above. A pinch held loosely enters at ~0.30, right on PINCH_RATIO_ON,
-# which leaves barely two centimetres of finger travel before 0.55: relaxing
-# slightly while dragging read as a release and committed the figure half-drawn.
-# Scaling the exit off the held gap gives tight and loose pinches the same
-# margin, and PINCH_RATIO_OFF stays the floor so a tight pinch is unaffected.
-PINCH_RELEASE_FACTOR = 1.4
-# Ceiling, so a pinch held very loosely can still be released by pulling apart.
-PINCH_RELEASE_MAX = 0.85
-# Frames of held pinch that define the reference gap.
-PINCH_BASELINE_FRAMES = 20
+# --- Pinch pose filters (canvas-only: distinguish pinch vs fist) -------------
+# hand_interaction.pinch uses the shared PINCH_RATIO_* / release knobs above
+# but does not apply these pose gates. Canvas gestures still need them.
 
 # Where the thumb–index midpoint sits relative to the palm center. A pinch
 # reaches out (0.8–1.2); a closed hand keeps the tips over the palm (~0.2).
@@ -89,10 +91,6 @@ FIST_OPEN_TIPS_PALM_MIN = 0.55
 # look briefly pinched, and that path is not the "open hand → drop" case.
 FIST_RELEASE_FRAMES = 2
 
-# Frames a held gesture survives with no hand detected at all. Tracking drops
-# out precisely when motion blur is worst, i.e. mid-throw.
-HAND_LOST_GRACE_FRAMES = 3
-
 # --- Sweep to clear ---------------------------------------------------------
 # Open palm dragged sideways wipes the canvas. Deliberately demanding: an open
 # palm is far from both pinch and fist, and the travel has to be a real swipe.
@@ -132,20 +130,6 @@ GRAB_HIT_PADDING = 0.03
 # Slightly looser when helping resize a figure locked by the other hand.
 HELPER_HIT_PADDING = 0.04
 
-# --- Landmark smoothing (one-euro) ------------------------------------------
-# A fixed-alpha EMA has to pick one compromise, and pays for it either way:
-# enough smoothing to kill jitter costs a fixed lag, which a fast hand turns
-# into a figure trailing well behind the palm. Here the filter cutoff rises
-# with the measured speed, so jitter is filtered while the hand rests and a
-# throw passes through almost untouched.
-#
-# Cutoff (Hz) with the hand at a standstill: the jitter floor.
-SMOOTH_MIN_CUTOFF = 1.5
-# How much the cutoff opens up per unit of speed (frame widths per second).
-SMOOTH_BETA = 2.5
-# Cutoff for the speed estimate itself, which is noisier than the position.
-SMOOTH_DERIVATIVE_CUTOFF = 1.0
-
 # --- Throwing a figure ------------------------------------------------------
 # Letting go of a moving figure hands it the hand's own velocity, in frame
 # widths per second. Drag is exponential, so the travel is speed * TAU: a
@@ -175,40 +159,11 @@ MIN_SHAPE_SIZE = 0.04
 
 # Display window
 WINDOW_NAME = "Hand Geometry Canvas"
-WINDOW_WIDTH = 1280
-WINDOW_HEIGHT = 720
+WINDOW_WIDTH = CAMERA_WIDTH
+WINDOW_HEIGHT = CAMERA_HEIGHT
 
 # Hand skeleton, gesture text and drag markers. Toggle at runtime with 'd'.
 SHOW_DEBUG_OVERLAY = False
-
-# --- Capture -----------------------------------------------------------------
-CAMERA_INDEX = 0
-CAMERA_WIDTH = 1280
-CAMERA_HEIGHT = 720
-CAMERA_FPS = 60
-
-# MJPG is the only format most USB webcams can sustain at 720p/60+; the default
-# uncompressed YUYV runs out of USB bandwidth first and silently drops to ~10fps.
-CAMERA_FOURCC = "MJPG"
-
-# Number of V4L2 buffers the driver maps. One is not enough: while userspace
-# holds the only buffer the driver has nowhere to put the next frame, so every
-# second one is dropped and a 30fps camera delivers 15. Two is the minimum that
-# keeps the stream full. Staleness is not a concern at any depth here — the
-# capture thread drains the queue continuously and `Camera.read` only ever
-# hands back the newest frame.
-CAMERA_BUFFER_SIZE = 2
-
-# --- Tracking cost -----------------------------------------------------------
-# Inference is by far the most expensive stage. TFLite's GPU delegate runs it on
-# the discrete GPU instead of XNNPACK on the CPU; we fall back automatically if
-# the machine cannot create a GL context for it.
-USE_GPU_INFERENCE = True
-
-# The landmark model rescales to a fixed input, so inference time is nearly flat
-# above this width while the surrounding per-pixel work is not. Landmarks come
-# back normalized, so shrinking first costs nothing in coordinate math.
-TRACKING_MAX_WIDTH = 640
 
 # Print a rolling FPS figure in the window title.
 SHOW_FPS = True

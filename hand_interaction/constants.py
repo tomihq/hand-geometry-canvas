@@ -30,6 +30,7 @@ PALM_IDS = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
 MCP_IDS = (INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
 
 # --- Pinch (3D ratio / hand size; ON/OFF hysteresis) -------------------------
+# Shared with hand_canvas (re-exported from there). Change values HERE only.
 # Median window also acts as the hold required to *start* a pinch.
 GESTURE_WINDOW_FRAMES = 5
 
