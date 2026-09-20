@@ -8,6 +8,7 @@ The library does **not** know about your app, objects, or rendering. It only emi
 - `HandEvent` (2D/abstract) via `on_event`:
   - **Pinch*** — thumb–index (create / stretch cursor); same model as `hand_canvas`
   - **Grab*** — closed fist (select + move); same model as `hand_canvas`
+  - **Resize*** — second hand joins while owner holds (helper cursor for corner-follow)
   - **HandMove** — always-on palm tracking for other apps
 
 Sweep-to-clear stays in `hand_canvas` only.

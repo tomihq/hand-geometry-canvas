@@ -11,6 +11,9 @@ from hand_interaction.types import (
     PinchEnd,
     PinchMove,
     PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
 )
 
@@ -49,6 +52,36 @@ def test_hand_move_dict() -> None:
     data = event_to_dict(event)
     assert data["type"] == "hand.move"
     assert data["delta_position"] == {"x": 0.01, "y": -0.02}
+
+
+def test_resize_start_dict() -> None:
+    event = ResizeStart("Right", "Left", Vector2(0.3, 0.5))
+    assert event_to_dict(event) == {
+        "type": "resize.start",
+        "owner_hand_id": "Right",
+        "helper_hand_id": "Left",
+        "position": {"x": 0.3, "y": 0.5},
+    }
+
+
+def test_resize_move_dict() -> None:
+    event = ResizeMove("Right", "Left", Vector2(0.25, 0.5), Vector2(-0.05, 0.0))
+    assert event_to_dict(event) == {
+        "type": "resize.move",
+        "owner_hand_id": "Right",
+        "helper_hand_id": "Left",
+        "position": {"x": 0.25, "y": 0.5},
+        "delta_position": {"x": -0.05, "y": 0.0},
+    }
+
+
+def test_resize_end_dict() -> None:
+    event = ResizeEnd("Right", "Left")
+    assert event_to_dict(event) == {
+        "type": "resize.end",
+        "owner_hand_id": "Right",
+        "helper_hand_id": "Left",
+    }
 
 
 def test_event_to_json_roundtrip_keys() -> None:

@@ -74,6 +74,7 @@ FIST_RELEASE_FRAMES = 2
 
 # --- Interaction event deadzones --------------------------------------------
 MOVE_EPSILON = 5e-4  # ‖Δposition‖ in normalized screen units
+RESIZE_EPSILON = 5e-4  # ‖Δhelper cursor‖ for resize.move
 
 # Frames a held gesture survives with no hand before force-end.
 HAND_LOST_GRACE_FRAMES = 3

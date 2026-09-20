@@ -15,6 +15,9 @@ from hand_interaction import (
     PinchMove,
     PinchStart,
     Quaternion,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
     Vector3,
 )
@@ -76,10 +79,23 @@ def test_hand_event_union_members() -> None:
         GrabMove("Left", Vector2(0.1, 0.2)),
         GrabEnd("Left", Vector2(0.1, 0.2)),
         HandMove("Left", Vector2(0.1, 0.2), Vector2(0.0, 0.0)),
+        ResizeStart("Right", "Left", Vector2(0.3, 0.5)),
+        ResizeMove("Right", "Left", Vector2(0.25, 0.5), Vector2(-0.05, 0.0)),
+        ResizeEnd("Right", "Left"),
     )
     for event in members:
         assert isinstance(event, HandEvent) or True  # union is typing-only
         assert hasattr(event, "type")
+
+
+def test_resize_events() -> None:
+    pos = Vector2(0.3, 0.5)
+    start = ResizeStart("Right", "Left", pos)
+    assert start.type == "resize.start"
+    move = ResizeMove("Right", "Left", pos, Vector2(-0.05, 0.0))
+    assert move.type == "resize.move"
+    end = ResizeEnd("Right", "Left")
+    assert end.type == "resize.end"
 
 
 def test_public_exports() -> None:
@@ -93,7 +109,9 @@ def test_public_exports() -> None:
         "GrabMove",
         "GrabEnd",
         "HandMove",
+        "ResizeStart",
+        "ResizeMove",
+        "ResizeEnd",
     ):
         assert hasattr(hi, name)
     assert not hasattr(hi, "HandRotate")
-    assert not hasattr(hi, "ResizeStart")

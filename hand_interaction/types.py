@@ -5,8 +5,9 @@ HandEvent stays 2D/abstract so a canvas client never has to know Vector3
 or Quaternion just to move a rectangle.
 
 Gesture events match the canvas model (minus sweep-to-clear):
-  - Pinch* — thumb–index create / stretch / resize cursor
+  - Pinch* — thumb–index create / stretch cursor
   - Grab*  — closed fist select + move
+  - Resize* — bimanual helper latch (owner holds; helper cursor drives resize)
   - HandMove — palm tracking for other apps (not gated on a gesture)
 """
 
@@ -118,6 +119,40 @@ class HandMove:
     type: Literal["hand.move"] = field(default="hand.move", init=False)
 
 
+@dataclass(frozen=True)
+class ResizeStart:
+    """Second hand joined while the first still holds (canvas helper latch).
+
+    Owner holds via pinch or fist; helper cursor drives resize — the consumer
+    applies corner-follow on its own figure.
+    """
+
+    owner_hand_id: str
+    helper_hand_id: str
+    position: Vector2
+    type: Literal["resize.start"] = field(default="resize.start", init=False)
+
+
+@dataclass(frozen=True)
+class ResizeMove:
+    """Helper hand moved while owner still holds — follow this cursor to resize."""
+
+    owner_hand_id: str
+    helper_hand_id: str
+    position: Vector2
+    delta_position: Vector2
+    type: Literal["resize.move"] = field(default="resize.move", init=False)
+
+
+@dataclass(frozen=True)
+class ResizeEnd:
+    """Owner or helper released — end of helper resize session."""
+
+    owner_hand_id: str
+    helper_hand_id: str
+    type: Literal["resize.end"] = field(default="resize.end", init=False)
+
+
 HandEvent = (
     PinchStart
     | PinchMove
@@ -126,4 +161,7 @@ HandEvent = (
     | GrabMove
     | GrabEnd
     | HandMove
+    | ResizeStart
+    | ResizeMove
+    | ResizeEnd
 )

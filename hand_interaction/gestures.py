@@ -162,6 +162,11 @@ class GestureDetector:
         self.last_release_ratio = PINCH_RATIO_OFF
         self.last_fist_score = 0
 
+    @property
+    def last_cursor(self) -> Vector2:
+        """Active interaction cursor (pinch midpoint or palm while fisting)."""
+        return self._last_cursor
+
     def reset(self) -> None:
         self._history.clear()
         self._pinch_baseline.clear()
@@ -415,3 +420,7 @@ class MultiHandGestureDetector:
     @property
     def fist_scores(self) -> dict[str, int]:
         return {hid: det.last_fist_score for hid, det in self._detectors.items()}
+
+    @property
+    def cursors(self) -> dict[str, Vector2]:
+        return {hid: det.last_cursor for hid, det in self._detectors.items()}
