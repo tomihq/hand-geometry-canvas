@@ -1,19 +1,21 @@
 # Hand Interaction
 
-Camera → hand tracking → 3D pose → abstract interaction events.
+Camera → hand tracking → abstract interaction events.
 
-The library does **not** know about your app, objects, or rendering. It only emits:
+The library does **not** know about your app, objects, or rendering. It emits `HandEvent` (2D / abstract) via `on_event`:
 
-- `HandPose` (3D palm + quaternion) via `on_pose`
-- `HandEvent` (2D/abstract) via `on_event`:
-  - **Pinch*** — thumb–index (create / stretch cursor); same model as `hand_canvas`
-  - **Grab*** — closed fist (select + move); same model as `hand_canvas`
-  - **Resize*** — second hand joins while owner holds (helper cursor for corner-follow)
-  - **HandMove** — always-on palm tracking for other apps
+- **Pinch*** — thumb–index (create / stretch cursor); same model as `hand_canvas`
+- **Grab*** — closed fist (select + move); same model as `hand_canvas`
+- **Resize*** — second hand joins while owner holds (helper cursor for corner-follow)
+- **HandMove** — always-on palm tracking for other apps
+
+Optional `on_pose` (`HandPose`: palm + orientation) is for debugging / raw pose. The canvas and gesture events stay 2D — no 3D scene.
 
 Sweep-to-clear stays in `hand_canvas` only.
 
-## Install
+## 1. Install
+
+Needs Python ≥ 3.11 and a webcam.
 
 ```bash
 python -m venv .venv
@@ -22,65 +24,83 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-`pip install -e .` registers the `hand-gesture` CLI. Place or auto-download `models/hand_landmarker.task` (MediaPipe).
+That installs deps (OpenCV, MediaPipe, ModernGL for the canvas, WebSockets, pytest) and registers the `hand-gesture` CLI.
 
-## Quick start (fake / tests)
+First camera run downloads MediaPipe’s `hand_landmarker.task` into `models/` if it is missing.
+
+## 2. Use the canvas
+
+Interactive 2D figures (create / move / resize / trash / sweep):
+
+```bash
+python -m hand_canvas.main
+```
+
+## 3. Hand demo with HUD stats
+
+Camera + skeleton + live stats (no canvas):
+
+```bash
+python -m demo.hand_pose_demo
+```
+
+HUD shows: skeleton, PINCH, FIST, POSITION, orientation (Euler), CONFIDENCE.
+
+## 4. Emit events only (WebSocket, no camera window)
+
+Publish `HandEvent` JSON on `ws://127.0.0.1:8766` (headless — tracking runs, no preview window):
+
+```bash
+hand-gesture serve
+```
+
+In another terminal, print events:
+
+```bash
+python examples/websocket_client.py
+```
+
+## 5. Emit events + see the camera
+
+Same as above, with a live OpenCV preview (cursor / gesture overlay; press `q` to quit):
+
+```bash
+hand-gesture serve --preview
+```
+
+Then, in another terminal:
+
+```bash
+python examples/websocket_client.py
+```
+
+Equivalent module form: `python -m hand_interaction serve` / `serve --preview`.
+
+## Programmatic API (optional)
+
+Fake source (no camera):
 
 ```python
-from hand_interaction import create_hand_gesture, FakeHandSource, PinchStart
+from hand_interaction import create_hand_gesture, FakeHandSource, PinchStart, Vector2
 
 fake = FakeHandSource()
 g = create_hand_gesture(source=fake)
 g.on_event(print)
 g.start()
-fake.emit(PinchStart("Right", position=__import__("hand_interaction").Vector2(0.5, 0.5)))
+fake.emit(PinchStart("Right", position=Vector2(0.5, 0.5)))
 g.stop()
 ```
 
-## Live camera API
+Live camera in-process:
 
 ```python
 from hand_interaction import create_hand_gesture
 
 g = create_hand_gesture(live=True)
 g.on_event(lambda e: print(e.type, getattr(e, "hand_id", "")))
-g.on_pose(lambda p: print(p.hand_id, p.palm))
 g.start()
 # ...
 g.stop()
-```
-
-## Hand Geometry Canvas
-
-Interactive canvas app (gestures from `hand_interaction` + figures / trash / sweep):
-
-```bash
-python -m hand_canvas.main
-```
-
-## Demo (OpenCV HUD, no canvas)
-
-```bash
-python -m demo.hand_pose_demo
-```
-
-Shows: skeleton, PINCH, FIST, POSITION, orientation (Euler for display only), CONFIDENCE.
-
-## WebSocket server (independent process)
-
-Publish `HandEvent` JSON to localhost clients:
-
-```bash
-hand-gesture serve
-# live camera window + WebSocket:
-hand-gesture serve --preview
-# or: python -m hand_interaction serve --preview
-```
-
-Listens on `ws://127.0.0.1:8766` by default. Verify with:
-
-```bash
-python examples/websocket_client.py
 ```
 
 ## Tests
@@ -93,5 +113,5 @@ python -m pytest tests/ -q
 
 - Camera is mirrored.
 - Event `Vector2` uses image space: origin at the **top** (`y` matches OpenCV / `hand_canvas`).
-- `HandPose.palm.y` is still hybrid (origin at the **bottom**) for 3D consumers; `HandMove` converts to image `y`.
+- `HandPose.palm.y` (if you use `on_pose`) uses origin at the **bottom**; `HandMove` converts to image `y`.
 - `HandPose.palm.z` is relative depth (`z_landmark / hand_scale`), not metres.
