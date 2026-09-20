@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from hand_interaction.constants import PINCH_RELEASE_FRAMES
 from hand_interaction.interaction import InteractionEngine, TrackedHand
 from hand_interaction.math3d import quat_identity
 from hand_interaction.types import (
@@ -164,7 +165,7 @@ def test_owner_pinch_then_helper_emits_resize() -> None:
 
     # Helper releases → resize.end; owner keeps pinch.
     ended: list = []
-    for _ in range(5):
+    for _ in range(PINCH_RELEASE_FRAMES + 5):
         ended.extend(
             eng.update(
                 [

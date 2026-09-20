@@ -43,6 +43,13 @@ PINCH_RATIO_OFF = 0.55
 PINCH_RELEASE_FACTOR = 1.4
 PINCH_RELEASE_MAX = 0.85
 PINCH_BASELINE_FRAMES = 20
+# Stretch / grow needs a sticky hold: a single noisy frame where the 2D
+# thumb–index gap spikes (arm out, palm edge-on, foreshortening) must not
+# emit PinchEnd. Same idea as FIST_RELEASE_FRAMES for the reverse handover.
+PINCH_RELEASE_FRAMES = 4
+# Brief closed-hand lookalikes while still pinching (camera-aimed tips)
+# should not steal the pinch into a grab.
+PINCH_TO_FIST_FRAMES = 3
 
 # --- Pinch pose filters (distinguish pinch vs fist) -------------------------
 # Where the thumb–index midpoint sits relative to the palm center. A pinch

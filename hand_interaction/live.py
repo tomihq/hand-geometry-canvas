@@ -31,6 +31,7 @@ class LiveHandSource:
     ) -> None:
         self._camera = camera or Camera(device_index=device_index, mirror=mirror)
         self._owns_camera = camera is None
+        self._mirror = self._camera.mirrored
         self._landmarker = landmarker
         self._model_path = model_path
         self._num_hands = num_hands
@@ -85,6 +86,7 @@ class LiveHandSource:
             self._landmarker = MediaPipeLandmarker(
                 model_path=self._model_path,
                 num_hands=self._num_hands,
+                mirrored_input=self._mirror,
             )
             self._owns_landmarker = True
         if self._owns_camera:

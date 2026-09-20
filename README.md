@@ -111,7 +111,9 @@ python -m pytest tests/ -q
 
 ## Coordinate notes
 
-- Camera is mirrored.
+- Camera is mirrored (selfie view).
+- `hand_id` / handedness are **anatomical**: `Right` is the user's right hand
+  even though the frame is mirrored (MediaPipe's raw labels are corrected).
 - Event `Vector2` uses image space: origin at the **top** (`y` matches OpenCV / `hand_canvas`).
 - `HandPose.palm.y` (if you use `on_pose`) uses origin at the **bottom**; `HandMove` converts to image `y`.
 - `HandPose.palm.z` is relative depth (`z_landmark / hand_scale`), not metres.

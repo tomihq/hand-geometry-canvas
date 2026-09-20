@@ -116,12 +116,15 @@ class HandTracker:
         model_path: Path | None = None,
         num_hands: int = 2,
         use_gpu: bool = USE_GPU_INFERENCE,
+        *,
+        mirrored_input: bool = True,
     ) -> None:
         self._landmarker = MediaPipeLandmarker(
             model_path=model_path,
             num_hands=num_hands,
             use_gpu=use_gpu,
             tracking_max_width=TRACKING_MAX_WIDTH,
+            mirrored_input=mirrored_input,
         )
         self._smoothers: dict[str, Smoother] = {}
         self._last_frame_s: float | None = None

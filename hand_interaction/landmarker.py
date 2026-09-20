@@ -57,6 +57,22 @@ def _handedness_label(result: mp_vision.HandLandmarkerResult, index: int) -> str
     return categories[0].category_name or f"Hand{index}"
 
 
+def anatomical_handedness(label: str, *, mirrored_input: bool) -> str:
+    """Map MediaPipe's label to the user's anatomical hand.
+
+    We flip the camera for selfie UX before inference. MediaPipe then sees a
+    mirrored hand shape and reports Left/Right swapped vs the person's body.
+    When the input was mirrored, swap so ``Right`` means the user's right hand.
+    """
+    if not mirrored_input:
+        return label
+    if label == "Left" or label.startswith("Left-"):
+        return "Right" + label[4:]
+    if label == "Right" or label.startswith("Right-"):
+        return "Left" + label[5:]
+    return label
+
+
 def _confidence(result: mp_vision.HandLandmarkerResult, index: int) -> float:
     if not result.handedness or index >= len(result.handedness):
         return 0.0
@@ -96,8 +112,11 @@ class MediaPipeLandmarker:
         num_hands: int = 2,
         use_gpu: bool = USE_GPU_INFERENCE,
         tracking_max_width: int = TRACKING_MAX_WIDTH,
+        *,
+        mirrored_input: bool = True,
     ) -> None:
         path = ensure_model(model_path or DEFAULT_MODEL_PATH)
+        self._mirrored_input = mirrored_input
         self._tracking_max_width = tracking_max_width
         self._smoothers: dict[str, _LandmarkSmoother] = {}
         self._start_ns = time.perf_counter_ns()
@@ -185,7 +204,10 @@ class MediaPipeLandmarker:
         hands: list[LandmarkHand] = []
         seen: set[str] = set()
         for i, raw in enumerate(result.hand_landmarks):
-            label = _handedness_label(result, i)
+            label = anatomical_handedness(
+                _handedness_label(result, i),
+                mirrored_input=self._mirrored_input,
+            )
             if label in seen:
                 label = f"{label}-{i}"
             seen.add(label)

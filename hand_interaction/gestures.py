@@ -44,8 +44,10 @@ from hand_interaction.constants import (
     PINCH_RATIO_OFF,
     PINCH_RATIO_ON,
     PINCH_RELEASE_FACTOR,
+    PINCH_RELEASE_FRAMES,
     PINCH_RELEASE_MAX,
     PINCH_TIPS_PALM_MIN,
+    PINCH_TO_FIST_FRAMES,
     TIP_IDS,
     THUMB_TIP,
     WRIST,
@@ -155,6 +157,8 @@ class GestureDetector:
         self._was_pinching = False
         self._was_fisting = False
         self._handover_frames = 0
+        self._pinch_release_frames = 0
+        self._pinch_to_fist_frames = 0
         self._lost_frames = 0
         self._last_cursor = Vector2(0.5, 0.5)
         self._last_palm = Vector2(0.5, 0.5)
@@ -174,6 +178,8 @@ class GestureDetector:
         self._was_pinching = False
         self._was_fisting = False
         self._handover_frames = 0
+        self._pinch_release_frames = 0
+        self._pinch_to_fist_frames = 0
         self._lost_frames = 0
         self.last_pinch_ratio = 1.0
         self.last_release_ratio = PINCH_RATIO_OFF
@@ -298,13 +304,30 @@ class GestureDetector:
             return events
 
         if self._was_pinching:
+            # Foreshortened / camera-aimed pinches briefly look like a fist in
+            # 2D; require agreement before stealing the stretch into a grab.
             if closed_hand:
+                self._pinch_to_fist_frames += 1
+            else:
+                self._pinch_to_fist_frames = 0
+
+            if self._pinch_to_fist_frames >= PINCH_TO_FIST_FRAMES:
+                self._pinch_to_fist_frames = 0
+                self._pinch_release_frames = 0
                 events.append(PinchEnd(hand_id=hand_id, position=pinch_pos))
                 self._was_pinching = False
                 events.extend(self._begin_grab(hand_id, palm, fingers_together))
                 return events
+
             self._last_cursor = pinch_pos
             if pinch_released:
+                self._pinch_release_frames += 1
+            else:
+                self._pinch_release_frames = 0
+
+            if self._pinch_release_frames >= PINCH_RELEASE_FRAMES:
+                self._pinch_release_frames = 0
+                self._pinch_to_fist_frames = 0
                 events.append(PinchEnd(hand_id=hand_id, position=pinch_pos))
                 self._was_pinching = False
                 self.state = (
@@ -338,6 +361,8 @@ class GestureDetector:
 
     def _begin_pinch(self, hand_id: str, pinch_pos: Vector2) -> list[HandEvent]:
         self._pinch_baseline.clear()
+        self._pinch_release_frames = 0
+        self._pinch_to_fist_frames = 0
         self._was_pinching = True
         self._last_cursor = pinch_pos
         self.state = GestureState.PINCHING

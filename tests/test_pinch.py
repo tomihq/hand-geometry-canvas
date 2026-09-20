@@ -10,6 +10,8 @@ from hand_interaction.constants import (
     INDEX_TIP,
     PINCH_RATIO_OFF,
     PINCH_RATIO_ON,
+    PINCH_RELEASE_FRAMES,
+    PINCH_TO_FIST_FRAMES,
     THUMB_TIP,
     WRIST,
 )
@@ -70,6 +72,17 @@ def _open_hand(ox: float = 0.5, oy: float = 0.5, scale: float = 0.12) -> np.ndar
     return _pinch_hand(0.9, ox=ox, oy=oy, scale=scale)
 
 
+def _fist_hand(ox: float = 0.5, oy: float = 0.5, scale: float = 0.12) -> np.ndarray:
+    """Closed fist: tips over the palm, index not extended."""
+    pts = _base_hand(ox, oy, scale)
+    palm = pts[[0, 5, 9, 13, 17]].mean(axis=0)
+    for tip in (8, 12, 16, 20):
+        pts[tip] = palm + np.array([0.02 * ((tip % 5) - 2), 0.02, 0.0]) * scale
+    pts[THUMB_TIP] = palm + np.array([0.15 * scale, 0.05 * scale, 0.0])
+    pts[6] = 0.5 * (pts[WRIST] + pts[INDEX_TIP])
+    return pts
+
+
 def _feed(detector: GestureDetector, landmarks: np.ndarray, frames: int, hand_id: str = "Right"):
     events = []
     for _ in range(frames):
@@ -98,7 +111,8 @@ def test_pinch_end_on_release() -> None:
     det = GestureDetector(window=3)
     _feed(det, _pinch_hand(0.2), 3)
     assert det.state is GestureState.PINCHING
-    ended = _feed(det, _open_hand(), 3)
+    # Release needs median to climb + PINCH_RELEASE_FRAMES of agreement.
+    ended = _feed(det, _open_hand(), PINCH_RELEASE_FRAMES + 5)
     assert any(isinstance(e, PinchEnd) for e in ended)
     assert det.state is not GestureState.PINCHING
 
@@ -124,6 +138,37 @@ def test_noise_around_threshold_does_not_flap() -> None:
 
     assert [e for e in events if isinstance(e, PinchEnd)] == []
     assert [e for e in events if isinstance(e, PinchStart)] == []
+    assert det.state is GestureState.PINCHING
+
+
+def test_brief_gap_spike_does_not_end_pinch() -> None:
+    """One noisy wide-gap frame while stretching must not drop the hold."""
+    det = GestureDetector(window=3)
+    _feed(det, _pinch_hand(0.2), 3)
+    assert det.state is GestureState.PINCHING
+
+    spike = det.update(_open_hand(), "Right")
+    assert [e for e in spike if isinstance(e, PinchEnd)] == []
+    assert det.state is GestureState.PINCHING
+
+    recovered = _feed(det, _pinch_hand(0.2), 5)
+    assert [e for e in recovered if isinstance(e, PinchEnd)] == []
+    assert det.state is GestureState.PINCHING
+
+
+def test_brief_fist_lookalike_does_not_steal_pinch() -> None:
+    """Camera-aimed pinch can look closed for a frame; keep stretching."""
+    det = GestureDetector(window=3)
+    _feed(det, _pinch_hand(0.2), 3)
+    assert det.state is GestureState.PINCHING
+
+    brief = PINCH_TO_FIST_FRAMES - 1
+    events = _feed(det, _fist_hand(), brief)
+    assert [e for e in events if isinstance(e, PinchEnd)] == []
+    assert det.state is GestureState.PINCHING
+
+    recovered = _feed(det, _pinch_hand(0.2), 5)
+    assert [e for e in recovered if isinstance(e, PinchEnd)] == []
     assert det.state is GestureState.PINCHING
 
 

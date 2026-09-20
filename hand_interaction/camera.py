@@ -57,6 +57,11 @@ class Camera:
         self._consumed_seq = 0
         self._error: BaseException | None = None
 
+    @property
+    def mirrored(self) -> bool:
+        """Whether frames are horizontally flipped (selfie view)."""
+        return self._mirror
+
     def open(self) -> None:
         cap = cv2.VideoCapture(self._device_index, cv2.CAP_V4L2)
         if not cap.isOpened():
