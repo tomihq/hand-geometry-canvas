@@ -2,7 +2,7 @@
 
 MediaPipe lives in ``hand_interaction.landmarker``. This module keeps the
 canvas-facing ``Hand`` / ``Point`` types and 2D one-euro smoothing used by
-gestures.py.
+the canvas gesture adapter.
 """
 
 from __future__ import annotations

@@ -5,9 +5,9 @@ from __future__ import annotations
 from hand_interaction.fake import FakeHandSource
 from hand_interaction.math3d import quat_identity
 from hand_interaction.types import (
+    GrabStart,
     HandMove,
     HandPose,
-    HandRotate,
     PinchEnd,
     PinchStart,
     Vector2,
@@ -22,11 +22,11 @@ def test_emit_reaches_subscribers() -> None:
 
     start = PinchStart("Right", Vector2(0.4, 0.5))
     move = HandMove("Right", Vector2(0.5, 0.5), Vector2(0.1, 0.0))
-    rotate = HandRotate("Right", 0.2)
+    grab = GrabStart("Right", Vector2(0.5, 0.5))
     end = PinchEnd("Right", Vector2(0.5, 0.5))
-    fake.emit_sequence([start, move, rotate, end])
+    fake.emit_sequence([start, move, grab, end])
 
-    assert received == [start, move, rotate, end]
+    assert received == [start, move, grab, end]
 
 
 def test_unsubscribe_stops_delivery() -> None:
@@ -46,7 +46,7 @@ def test_multiple_listeners() -> None:
     b: list = []
     fake.on_event(a.append)
     fake.on_event(b.append)
-    event = HandRotate("Right", 0.05)
+    event = GrabStart("Right", Vector2(0.5, 0.5))
     fake.emit(event)
     assert a == [event] and b == [event]
 

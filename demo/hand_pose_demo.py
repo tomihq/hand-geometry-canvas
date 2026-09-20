@@ -1,4 +1,4 @@
-"""Independent OpenCV demo: camera → hand pose → HUD (no canvas / Jarvis).
+"""Independent OpenCV demo: camera → hand pose → HUD (no canvas).
 
 Run:
   python -m demo.hand_pose_demo
@@ -27,15 +27,14 @@ from hand_interaction.interaction import InteractionEngine, TrackedHand
 from hand_interaction.landmarker import MediaPipeLandmarker
 from hand_interaction.pose import PoseEstimator
 from hand_interaction.types import (
+    GrabEnd,
+    GrabStart,
     HandEvent,
     HandMove,
     HandPose,
-    HandRotate,
     PinchEnd,
+    PinchMove,
     PinchStart,
-    ResizeEnd,
-    ResizeMove,
-    ResizeStart,
     Vector2,
 )
 
@@ -70,8 +69,8 @@ CONNECTIONS = [
 @dataclass
 class HandHud:
     pinching: bool = False
+    grabbing: bool = False
     position: Vector2 = field(default_factory=lambda: Vector2(0.5, 0.5))
-    delta_rotation: float = 0.0
     confidence: float = 0.0
     palm_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     euler_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -88,21 +87,31 @@ def quat_to_euler_deg(pose: HandPose) -> tuple[float, float, float]:
 
 
 def apply_event(hud: dict[str, HandHud], event: HandEvent) -> None:
-    if isinstance(event, (ResizeStart, ResizeMove, ResizeEnd)):
-        return
     state = hud.setdefault(event.hand_id, HandHud())
     if isinstance(event, PinchStart):
         state.pinching = True
+        state.grabbing = False
         state.gesture = "PINCHING"
         state.position = event.position
+    elif isinstance(event, PinchMove):
+        state.position = event.position
+        state.gesture = "PINCHING"
     elif isinstance(event, PinchEnd):
         state.pinching = False
         state.gesture = "OPEN"
         state.position = event.position
-    elif isinstance(event, HandMove):
+    elif isinstance(event, GrabStart):
+        state.grabbing = True
+        state.pinching = False
+        state.gesture = "FIST"
         state.position = event.position
-    elif isinstance(event, HandRotate):
-        state.delta_rotation = event.delta_rotation
+    elif isinstance(event, GrabEnd):
+        state.grabbing = False
+        state.gesture = "OPEN"
+        state.position = event.position
+    elif isinstance(event, HandMove):
+        if not state.pinching and not state.grabbing:
+            state.position = event.position
 
 
 def update_pose_hud(hud: dict[str, HandHud], pose: HandPose) -> None:
@@ -110,8 +119,9 @@ def update_pose_hud(hud: dict[str, HandHud], pose: HandPose) -> None:
     state.confidence = pose.confidence
     state.palm_xyz = (pose.palm.x, pose.palm.y, pose.palm.z)
     state.euler_deg = quat_to_euler_deg(pose)
-    if not state.pinching:
-        state.position = Vector2(pose.palm.x, pose.palm.y)
+    if not state.pinching and not state.grabbing:
+        # HandPose.palm.y is hybrid (bottom origin); HUD uses image y.
+        state.position = Vector2(pose.palm.x, 1.0 - pose.palm.y)
 
 
 def _to_px(x: float, y_image: float, w: int, h: int) -> tuple[int, int]:
@@ -156,18 +166,17 @@ def draw_hud(image: np.ndarray, hud: dict[str, HandHud]) -> None:
 
     for hand_id, state in hud.items():
         yaw, pitch, roll = state.euler_deg
+        active = state.pinching or state.grabbing
         lines = [
             f"{hand_id}  gesture={state.gesture}",
-            f"  PINCH={'YES' if state.pinching else 'no'}",
+            f"  PINCH={'YES' if state.pinching else 'no'}  "
+            f"FIST={'YES' if state.grabbing else 'no'}",
             f"  POSITION  x={state.position.x:.3f}  y={state.position.y:.3f}",
             (
                 f"  PALM3D    x={state.palm_xyz[0]:.3f} "
                 f"y={state.palm_xyz[1]:.3f} z={state.palm_xyz[2]:.3f}"
             ),
-            (
-                f"  ROTATION  yaw={yaw:+.1f} pitch={pitch:+.1f} "
-                f"roll={roll:+.1f}  d={state.delta_rotation:+.3f}rad"
-            ),
+            f"  ORIENT    yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}",
             f"  CONFIDENCE {state.confidence:.2f}",
         ]
         for line in lines:
@@ -177,7 +186,7 @@ def draw_hud(image: np.ndarray, hud: dict[str, HandHud]) -> None:
                 (12, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 220, 255) if state.pinching else (220, 220, 220),
+                (0, 220, 255) if active else (220, 220, 220),
                 1,
                 cv2.LINE_AA,
             )
@@ -186,8 +195,6 @@ def draw_hud(image: np.ndarray, hud: dict[str, HandHud]) -> None:
 
 
 def run(device_index: int = CAMERA_INDEX) -> int:
-    # Same capture knobs as hand_canvas (MJPG 1280x720 @ 60) so the preview
-    # is not a low-res YUYV fallback that looks soft and choppy.
     camera = Camera(
         device_index=device_index,
         mirror=True,

@@ -6,14 +6,14 @@ import json
 from typing import Any
 
 from hand_interaction.types import (
+    GrabEnd,
+    GrabMove,
+    GrabStart,
     HandEvent,
     HandMove,
-    HandRotate,
     PinchEnd,
+    PinchMove,
     PinchStart,
-    ResizeEnd,
-    ResizeMove,
-    ResizeStart,
     Vector2,
 )
 
@@ -30,7 +30,33 @@ def event_to_dict(event: HandEvent) -> dict[str, Any]:
             "hand_id": event.hand_id,
             "position": _vector2_to_dict(event.position),
         }
+    if isinstance(event, PinchMove):
+        return {
+            "type": event.type,
+            "hand_id": event.hand_id,
+            "position": _vector2_to_dict(event.position),
+        }
     if isinstance(event, PinchEnd):
+        return {
+            "type": event.type,
+            "hand_id": event.hand_id,
+            "position": _vector2_to_dict(event.position),
+        }
+    if isinstance(event, GrabStart):
+        return {
+            "type": event.type,
+            "hand_id": event.hand_id,
+            "position": _vector2_to_dict(event.position),
+            "fingers_together": event.fingers_together,
+        }
+    if isinstance(event, GrabMove):
+        return {
+            "type": event.type,
+            "hand_id": event.hand_id,
+            "position": _vector2_to_dict(event.position),
+            "fingers_together": event.fingers_together,
+        }
+    if isinstance(event, GrabEnd):
         return {
             "type": event.type,
             "hand_id": event.hand_id,
@@ -42,33 +68,6 @@ def event_to_dict(event: HandEvent) -> dict[str, Any]:
             "hand_id": event.hand_id,
             "position": _vector2_to_dict(event.position),
             "delta_position": _vector2_to_dict(event.delta_position),
-        }
-    if isinstance(event, HandRotate):
-        return {
-            "type": event.type,
-            "hand_id": event.hand_id,
-            "delta_rotation": event.delta_rotation,
-        }
-    if isinstance(event, ResizeStart):
-        return {
-            "type": event.type,
-            "owner_hand_id": event.owner_hand_id,
-            "helper_hand_id": event.helper_hand_id,
-            "position": _vector2_to_dict(event.position),
-        }
-    if isinstance(event, ResizeMove):
-        return {
-            "type": event.type,
-            "owner_hand_id": event.owner_hand_id,
-            "helper_hand_id": event.helper_hand_id,
-            "position": _vector2_to_dict(event.position),
-            "delta_position": _vector2_to_dict(event.delta_position),
-        }
-    if isinstance(event, ResizeEnd):
-        return {
-            "type": event.type,
-            "owner_hand_id": event.owner_hand_id,
-            "helper_hand_id": event.helper_hand_id,
         }
     raise TypeError(f"unsupported HandEvent: {type(event)!r}")
 

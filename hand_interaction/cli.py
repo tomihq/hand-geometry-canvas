@@ -17,14 +17,13 @@ from hand_interaction.transport.websocket_server import (
     WebSocketServer,
 )
 from hand_interaction.types import (
+    GrabEnd,
+    GrabStart,
     HandEvent,
     HandMove,
-    HandRotate,
     PinchEnd,
+    PinchMove,
     PinchStart,
-    ResizeEnd,
-    ResizeMove,
-    ResizeStart,
     Vector2,
 )
 
@@ -35,6 +34,7 @@ PREVIEW_WINDOW = "hand-gesture serve"
 class _PreviewHand:
     position: Vector2 = field(default_factory=lambda: Vector2(0.5, 0.5))
     pinching: bool = False
+    grabbing: bool = False
     last_type: str = ""
 
 
@@ -81,18 +81,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _apply_preview_event(state: dict[str, _PreviewHand], event: HandEvent) -> None:
-    if isinstance(event, (ResizeStart, ResizeMove, ResizeEnd)):
-        return
     hand = state.setdefault(event.hand_id, _PreviewHand())
     hand.last_type = event.type
-    if isinstance(event, (PinchStart, PinchEnd, HandMove)):
+    if isinstance(
+        event, (PinchStart, PinchMove, PinchEnd, GrabStart, GrabEnd, HandMove)
+    ):
         hand.position = event.position
     if isinstance(event, PinchStart):
         hand.pinching = True
+        hand.grabbing = False
     elif isinstance(event, PinchEnd):
         hand.pinching = False
-    elif isinstance(event, HandRotate):
-        pass
+    elif isinstance(event, GrabStart):
+        hand.grabbing = True
+        hand.pinching = False
+    elif isinstance(event, GrabEnd):
+        hand.grabbing = False
 
 
 def _draw_preview(
@@ -115,11 +119,22 @@ def _draw_preview(
         cv2.LINE_AA,
     )
     for hand_id, hand in state.items():
-        # Event coords: y origin at bottom → OpenCV y origin at top.
+        # Event coords are image-space (y origin at top), same as OpenCV.
         x = int(hand.position.x * w)
-        y = int((1.0 - hand.position.y) * h)
-        color = (0, 80, 255) if hand.pinching else (255, 180, 40)
-        cv2.circle(overlay, (x, y), 14 if hand.pinching else 10, color, -1)
+        y = int(hand.position.y * h)
+        if hand.pinching:
+            color = (0, 80, 255)
+        elif hand.grabbing:
+            color = (80, 200, 40)
+        else:
+            color = (255, 180, 40)
+        cv2.circle(
+            overlay,
+            (x, y),
+            14 if (hand.pinching or hand.grabbing) else 10,
+            color,
+            -1,
+        )
         cv2.putText(
             overlay,
             f"{hand_id} {hand.last_type}",
@@ -156,6 +171,7 @@ def _run_preview_loop(
                 hid: _PreviewHand(
                     position=h.position,
                     pinching=h.pinching,
+                    grabbing=h.grabbing,
                     last_type=h.last_type,
                 )
                 for hid, h in state.items()

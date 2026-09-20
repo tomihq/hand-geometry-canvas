@@ -8,7 +8,7 @@ from hand_interaction.interaction import InteractionEngine
 from hand_interaction.live import process_landmark_hands
 from hand_interaction.pose import LandmarkHand, PoseEstimator
 from hand_interaction.types import HandMove, HandPose
-from tests.test_pinch import _hand_with_gap
+from tests.test_pinch import _open_hand
 
 
 def test_process_landmark_hands_emits_move() -> None:
@@ -17,7 +17,7 @@ def test_process_landmark_hands_emits_move() -> None:
     engine = InteractionEngine(move_epsilon=1e-6)
 
     open_hand = LandmarkHand(
-        landmarks=_hand_with_gap(0.9, scale=0.1),
+        landmarks=_open_hand(0.5, 0.5),
         hand_id="Right",
         handedness="Right",
     )

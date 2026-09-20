@@ -11,16 +11,16 @@ from __future__ import annotations
 from hand_interaction.api import HandGesture, create_hand_gesture
 from hand_interaction.fake import FakeHandSource
 from hand_interaction.types import (
+    GrabEnd,
+    GrabMove,
+    GrabStart,
     HandEvent,
     HandMove,
     HandPose,
-    HandRotate,
     PinchEnd,
+    PinchMove,
     PinchStart,
     Quaternion,
-    ResizeEnd,
-    ResizeMove,
-    ResizeStart,
     Vector2,
     Vector3,
 )
@@ -29,17 +29,17 @@ __version__ = "0.1.0"
 
 __all__ = [
     "FakeHandSource",
+    "GrabEnd",
+    "GrabMove",
+    "GrabStart",
     "HandEvent",
     "HandGesture",
     "HandMove",
     "HandPose",
-    "HandRotate",
     "PinchEnd",
+    "PinchMove",
     "PinchStart",
     "Quaternion",
-    "ResizeEnd",
-    "ResizeMove",
-    "ResizeStart",
     "Vector2",
     "Vector3",
     "create_hand_gesture",

@@ -5,12 +5,12 @@ Camera → hand tracking → 3D pose → abstract interaction events.
 The library does **not** know about your app, objects, or rendering. It only emits:
 
 - `HandPose` (3D palm + quaternion) via `on_pose`
-- `HandEvent` (2D/abstract: pinch, move, rotate, **owner/helper resize**) via `on_event`
+- `HandEvent` (2D/abstract) via `on_event`:
+  - **Pinch*** — thumb–index (create / stretch cursor); same model as `hand_canvas`
+  - **Grab*** — closed fist (select + move); same model as `hand_canvas`
+  - **HandMove** — always-on palm tracking for other apps
 
-Lock model (same idea as `hand_canvas`): the first hand to pinch is the owner;
-while it holds, a second pinch becomes the helper and emits `resize.start` /
-`resize.move` / `resize.end` from the **helper cursor** (not inter-hand distance).
-The consumer applies corner-follow resize on its own selected figure.
+Sweep-to-clear stays in `hand_canvas` only.
 
 ## Install
 
@@ -49,13 +49,21 @@ g.start()
 g.stop()
 ```
 
+## Hand Geometry Canvas
+
+Interactive canvas app (gestures from `hand_interaction` + figures / trash / sweep):
+
+```bash
+python -m hand_canvas.main
+```
+
 ## Demo (OpenCV HUD, no canvas)
 
 ```bash
 python -m demo.hand_pose_demo
 ```
 
-Shows: skeleton, PINCH, POSITION, ROTATION (Euler for display only), CONFIDENCE.
+Shows: skeleton, PINCH, FIST, POSITION, orientation (Euler for display only), CONFIDENCE.
 
 ## WebSocket server (independent process)
 
@@ -83,6 +91,6 @@ python -m pytest tests/ -q
 ## Coordinate notes
 
 - Camera is mirrored.
-- Event `Vector2.y` uses origin at the **bottom** (`y' = 1 - y_image`).
+- Event `Vector2` uses image space: origin at the **top** (`y` matches OpenCV / `hand_canvas`).
+- `HandPose.palm.y` is still hybrid (origin at the **bottom**) for 3D consumers; `HandMove` converts to image `y`.
 - `HandPose.palm.z` is relative depth (`z_landmark / hand_scale`), not metres.
-- `HandRotate.delta_rotation` is radians about the screen axis (projected from 3D Δq).

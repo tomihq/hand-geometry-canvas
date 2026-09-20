@@ -1,25 +1,21 @@
-"""Tests for InteractionEngine: move / rotate / pinch / grace."""
+"""Tests for InteractionEngine: move / pinch / grab / grace."""
 
 from __future__ import annotations
 
 import pytest
 
 from hand_interaction.interaction import InteractionEngine, TrackedHand
-from hand_interaction.math3d import quat_from_axis_angle, quat_identity
+from hand_interaction.math3d import quat_identity
 from hand_interaction.types import (
     HandMove,
     HandPose,
-    HandRotate,
     PinchEnd,
     PinchStart,
     Quaternion,
-    ResizeEnd,
-    ResizeMove,
-    ResizeStart,
     Vector2,
     Vector3,
 )
-from tests.test_pinch import _hand_at, _hand_with_gap
+from tests.test_pinch import _open_hand, _pinch_hand
 
 
 def _pose(
@@ -41,17 +37,19 @@ def _pose(
 
 def _tracked(
     pose: HandPose,
-    gap_ratio: float = 0.9,
     *,
+    pinching: bool = False,
     ox: float | None = None,
-    oy: float | None = None,
+    oy_image: float | None = None,
 ) -> TrackedHand:
     if ox is None:
         ox = pose.palm.x
-    if oy is None:
-        oy = pose.palm.y
-    # Image y is top-origin; public palm.y is bottom-origin.
-    landmarks = _hand_at(ox, 1.0 - oy, gap_ratio)
+    # pose.palm.y is hybrid (bottom origin); landmarks use image y.
+    if oy_image is None:
+        oy_image = 1.0 - pose.palm.y
+    landmarks = _pinch_hand(0.2, ox=ox, oy=oy_image) if pinching else _open_hand(
+        ox=ox, oy=oy_image
+    )
     return TrackedHand(pose=pose, landmarks=landmarks)
 
 
@@ -63,6 +61,7 @@ def test_move_positive_and_negative_deltas() -> None:
     events = eng.update([_tracked(_pose("Right", 0.55, 0.5))])
     moves = [e for e in events if isinstance(e, HandMove)]
     assert len(moves) == 1
+    # HandMove uses image y (top origin): hybrid 0.5 → image 0.5
     assert moves[0].delta_position.x == pytest.approx(0.15)
     assert moves[0].position == Vector2(0.55, 0.5)
 
@@ -79,41 +78,20 @@ def test_stable_pose_emits_no_move() -> None:
     assert not any(isinstance(e, HandMove) for e in events)
 
 
-def test_rotate_emits_projected_float() -> None:
-    eng = InteractionEngine(rotate_epsilon=1e-6)
-    eng.update([_tracked(_pose("Right", 0.5, 0.5))])
-    q = quat_from_axis_angle(Vector3(0.0, 0.0, 1.0), 0.25)
-    events = eng.update([_tracked(_pose("Right", 0.5, 0.5, orientation=q))])
-    rotates = [e for e in events if isinstance(e, HandRotate)]
-    assert len(rotates) == 1
-    assert rotates[0].delta_rotation == pytest.approx(0.25, rel=1e-4)
-    assert isinstance(rotates[0].delta_rotation, float)
-
-
-def test_small_rotation_within_deadzone_silent() -> None:
-    eng = InteractionEngine(rotate_epsilon=0.05)
-    eng.update([_tracked(_pose("Right", 0.5, 0.5))])
-    q = quat_from_axis_angle(Vector3(0.0, 0.0, 1.0), 0.01)
-    events = eng.update([_tracked(_pose("Right", 0.5, 0.5, orientation=q))])
-    assert not any(isinstance(e, HandRotate) for e in events)
-
-
 def test_pinch_integrated() -> None:
     eng = InteractionEngine()
     events: list = []
     for _ in range(5):
-        events.extend(
-            eng.update([_tracked(_pose("Right", 0.5, 0.5), gap_ratio=0.2)])
-        )
+        events.extend(eng.update([_tracked(_pose("Right", 0.5, 0.5), pinching=True)]))
     starts = [e for e in events if isinstance(e, PinchStart)]
     assert len(starts) == 1
     assert isinstance(starts[0].position, Vector2)
 
 
 def test_grace_holds_pinch_then_ends() -> None:
-    eng = InteractionEngine(grace_frames=3)
+    eng = InteractionEngine()
     for _ in range(5):
-        eng.update([_tracked(_pose("Right", 0.5, 0.5), gap_ratio=0.2)])
+        eng.update([_tracked(_pose("Right", 0.5, 0.5), pinching=True)])
 
     for _ in range(3):
         events = eng.update([])
@@ -144,64 +122,11 @@ def test_multi_hand_independent() -> None:
     assert moves["Right"].delta_position.x == pytest.approx(-0.05)
 
 
-def test_owner_pinch_then_helper_emits_resize() -> None:
-    """Canvas lock model: first pinch = owner; second = helper resize cursor."""
-    eng = InteractionEngine(resize_epsilon=1e-6)
-
-    # Owner (Right) pinches alone first.
-    for _ in range(5):
-        eng.update([_tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2)])
-    assert eng._owner_hand_id == "Right"
-
-    # Helper (Left) joins while owner still holds.
-    events: list = []
-    for _ in range(5):
-        events.extend(
-            eng.update(
-                [
-                    _tracked(_pose("Left", 0.3, 0.5), gap_ratio=0.2),
-                    _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
-                ]
-            )
-        )
-    starts = [e for e in events if isinstance(e, ResizeStart)]
-    assert len(starts) == 1
-    assert starts[0].owner_hand_id == "Right"
-    assert starts[0].helper_hand_id == "Left"
-
-    # Helper cursor moves → resize.move follows helper position (not distance).
-    moved = eng.update(
-        [
-            _tracked(_pose("Left", 0.2, 0.5), gap_ratio=0.2),
-            _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
-        ]
-    )
-    resizes = [e for e in moved if isinstance(e, ResizeMove)]
-    assert len(resizes) == 1
-    assert resizes[0].helper_hand_id == "Left"
-    assert resizes[0].delta_position.x != 0.0
-
-    # Helper releases → resize.end; owner keeps pinch.
-    ended: list = []
-    for _ in range(5):
-        ended.extend(
-            eng.update(
-                [
-                    _tracked(_pose("Left", 0.2, 0.5), gap_ratio=0.9),
-                    _tracked(_pose("Right", 0.7, 0.5), gap_ratio=0.2),
-                ]
-            )
-        )
-    assert any(isinstance(e, ResizeEnd) for e in ended)
-    assert eng._owner_hand_id == "Right"
-
-
 def test_events_do_not_expose_3d_types() -> None:
-    eng = InteractionEngine(move_epsilon=1e-6, rotate_epsilon=1e-6)
+    eng = InteractionEngine(move_epsilon=1e-6)
     eng.update([_tracked(_pose("Right", 0.5, 0.5))])
-    q = quat_from_axis_angle(Vector3(0.0, 0.0, 1.0), 0.2)
     events = eng.update(
-        [_tracked(_pose("Right", 0.6, 0.5, orientation=q), gap_ratio=0.2)]
+        [_tracked(_pose("Right", 0.6, 0.5), pinching=True)]
     )
     for event in events:
         for value in vars(event).values():
