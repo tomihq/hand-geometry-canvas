@@ -18,12 +18,16 @@ from hand_interaction.transport.websocket_server import (
 )
 from hand_interaction.types import (
     GrabEnd,
+    GrabMove,
     GrabStart,
     HandEvent,
     HandMove,
     PinchEnd,
     PinchMove,
     PinchStart,
+    ResizeEnd,
+    ResizeMove,
+    ResizeStart,
     Vector2,
 )
 
@@ -81,10 +85,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _apply_preview_event(state: dict[str, _PreviewHand], event: HandEvent) -> None:
+    # Resize events are two-handed (owner + helper); they have no hand_id.
+    if isinstance(event, (ResizeStart, ResizeMove, ResizeEnd)):
+        hand = state.setdefault(event.helper_hand_id, _PreviewHand())
+        hand.last_type = event.type
+        if isinstance(event, (ResizeStart, ResizeMove)):
+            hand.position = event.position
+        return
+
     hand = state.setdefault(event.hand_id, _PreviewHand())
     hand.last_type = event.type
     if isinstance(
-        event, (PinchStart, PinchMove, PinchEnd, GrabStart, GrabEnd, HandMove)
+        event,
+        (PinchStart, PinchMove, PinchEnd, GrabStart, GrabMove, GrabEnd, HandMove),
     ):
         hand.position = event.position
     if isinstance(event, PinchStart):
